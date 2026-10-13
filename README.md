@@ -177,6 +177,8 @@ What it shows:
 - 🌡️ **Temperature tiles** for each nozzle (T0–T3, with the active tool
   highlighted), the bed, the chamber and the Panda Breath (if present).
   Tap a tile to set its target.
+- 🔥 **Chamber heater presets**: one-tap filament buttons (PLA, ABS, PC, …) for a
+  Panda Breath / DragonBreath ([details](#filament-presets)).
 - 🎨 **Loaded filament** on each nozzle tile: a colour dot and the material
   (e.g. `PLA Basic`). A dashed ring means the nozzle is empty.
 - **Speed, flow and fan** at a glance. Tap to adjust.
@@ -184,7 +186,7 @@ What it shows:
 - 🎛️ **Controls**: Pause/Resume, Cancel, Light, Filter (Panda Breath), Home
   and E-Stop. Cancel and E-Stop need a second tap to confirm.
 
-Options (all optional, also available in the visual editor):
+Options (all optional; all except `chamber_presets` are also in the visual editor):
 
 | Option | Default | Description |
 |---|---|---|
@@ -194,6 +196,8 @@ Options (all optional, also available in the visual editor):
 | `show_camera` | `true` | Show the camera feed |
 | `camera_mode` | `live` | `live` video or `snapshot` (refreshed every 5 seconds) |
 | `show_controls` | `true` | Show the control buttons |
+| `show_chamber_presets` | `true` | Show filament preset buttons for a Panda Breath / DragonBreath |
+| `chamber_presets` | see below | Your own preset list (YAML only), e.g. `[{name: ABS, temp: 55}, {name: PLA, temp: 0}]` |
 
 Example:
 
@@ -267,6 +271,35 @@ Notes:
 - With **stock** U1 firmware the Panda Breath isn't visible to the printer.
   In that case, use the Panda Breath's own firmware 1.0.4 MQTT /
   Home Assistant discovery instead.
+
+### Filament presets
+
+The card shows a row of one-tap presets under the temperature tiles. Tap a
+filament type and the chamber heater goes to its recommended temperature:
+
+| Preset | Chamber target |
+|---|---|
+| PLA, TPU | Off (these print best in a cool chamber) |
+| PETG | 35 °C (a little warmth helps layer adhesion, far below where PETG softens) |
+| ABS, ASA | 50 °C |
+| PA (nylon) | 55 °C |
+| PC | 60 °C |
+
+- The preset that's currently set is highlighted (Off presets in grey), and a small dot marks
+  the filament type that's loaded in a nozzle.
+- Targets are kept within the heater's minimum and maximum from the printer's config.
+- To use your own values, set `chamber_presets` in the card's YAML (⋮ → *Show code editor*):
+
+```yaml
+type: custom:snapmaker-u1-card
+chamber_presets:
+  - name: PETG
+    temp: 40
+  - name: ABS
+    temp: 55
+  - name: PC
+    temp: 60
+```
 
 ---
 
