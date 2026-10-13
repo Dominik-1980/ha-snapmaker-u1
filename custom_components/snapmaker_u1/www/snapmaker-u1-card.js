@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.7.2";
+const CARD_VERSION = "1.7.3";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -57,6 +57,39 @@ const formatDuration = (seconds) => {
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m`;
   return `${s}s`;
+};
+
+// Update `parent` to match `html` while keeping existing nodes wherever
+// possible. The printer pushes several updates a second; rebuilding the
+// buttons with innerHTML each time replaced the element under the user's
+// finger mid-tap, so taps were lost.
+const patchHTML = (parent, html) => {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  patchChildren(parent, template.content);
+};
+
+const patchChildren = (from, to) => {
+  const toNodes = Array.from(to.childNodes);
+  toNodes.forEach((toNode, i) => {
+    const fromNode = from.childNodes[i];
+    if (!fromNode) {
+      from.appendChild(toNode.cloneNode(true));
+    } else if (fromNode.nodeType !== toNode.nodeType || fromNode.nodeName !== toNode.nodeName) {
+      from.replaceChild(toNode.cloneNode(true), fromNode);
+    } else if (fromNode.nodeType === Node.ELEMENT_NODE) {
+      for (const { name } of Array.from(fromNode.attributes)) {
+        if (!toNode.hasAttribute(name)) fromNode.removeAttribute(name);
+      }
+      for (const { name, value } of Array.from(toNode.attributes)) {
+        if (fromNode.getAttribute(name) !== value) fromNode.setAttribute(name, value);
+      }
+      patchChildren(fromNode, toNode);
+    } else if (fromNode.nodeValue !== toNode.nodeValue) {
+      fromNode.nodeValue = toNode.nodeValue;
+    }
+  });
+  while (from.childNodes.length > toNodes.length) from.removeChild(from.lastChild);
 };
 
 // Mirrors chamber_label() in definitions.py.
@@ -241,7 +274,7 @@ class SnapmakerU1Card extends HTMLElement {
         .join(";") + `|${this._armed?.action ?? ""}`;
     if (signature === this._signature) return;
     this._signature = signature;
-    this._contentEl.innerHTML = this._renderContent();
+    patchHTML(this._contentEl, this._renderContent());
   }
 
   _updateCamera() {
