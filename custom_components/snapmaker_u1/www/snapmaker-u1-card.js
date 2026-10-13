@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.7.3";
+const CARD_VERSION = "1.8.0";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -30,6 +30,20 @@ const STATUS = {
   standby: { label: "Ready", icon: "mdi:printer-3d", tone: "muted" },
   offline: { label: "Offline", icon: "mdi:lan-disconnect", tone: "error" },
 };
+
+// Chamber heater (Panda Breath / DragonBreath) presets per filament type.
+// PLA, PETG and TPU print best with the chamber heater off; engineering
+// filaments benefit from a warm chamber. Values are capped at the heater's
+// max (60 °C on a Panda Breath). Override with `chamber_presets`.
+const DEFAULT_CHAMBER_PRESETS = [
+  { name: "PLA", temp: 0 },
+  { name: "PETG", temp: 0 },
+  { name: "TPU", temp: 0 },
+  { name: "ABS", temp: 50 },
+  { name: "ASA", temp: 50 },
+  { name: "PA", temp: 55 },
+  { name: "PC", temp: 60 },
+];
 
 const CONFIRM_MS = 4000;
 const SNAPSHOT_REFRESH_MS = 5000;
@@ -120,7 +134,14 @@ class SnapmakerU1Card extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { show_camera: true, camera_mode: "live", show_controls: true, accent_color: "theme" };
+    return {
+      show_camera: true,
+      camera_mode: "live",
+      show_controls: true,
+      show_chamber_presets: true,
+      show_chamber_presets: true,
+      accent_color: "theme",
+    };
   }
 
   constructor() {
@@ -366,6 +387,7 @@ class SnapmakerU1Card extends HTMLElement {
       ${this._renderAlerts()}
       ${active ? this._renderProgress(status) : this._renderIdle(status)}
       ${this._renderTemps()}
+      ${this._config.show_chamber_presets !== false ? this._renderChamberPresets() : ""}
       ${this._renderStats()}
       ${this._config.show_controls !== false ? this._renderControls(status, light) : ""}`;
   }
@@ -561,6 +583,48 @@ class SnapmakerU1Card extends HTMLElement {
     )}">${esc(filament.state)}</div>`;
   }
 
+  // One row of filament preset buttons per chamber heater.
+  _renderChamberPresets() {
+    const presets = Array.isArray(this._config.chamber_presets)
+      ? this._config.chamber_presets
+      : DEFAULT_CHAMBER_PRESETS;
+    if (!presets.length) return "";
+    // Materials currently loaded, so the matching preset can be marked.
+    const loaded = this._roles("sensor.extruder")
+      .filter((role) => role.endsWith("_filament"))
+      .map((role) => this._state(role)?.attributes)
+      .filter((attrs) => attrs && attrs.loaded !== false && attrs.material)
+      .map((attrs) => String(attrs.material).toUpperCase());
+    const rows = [];
+    for (const role of this._roles("sensor.heater_")) {
+      const match = role.match(/^sensor\.heater_(.+)_temperature$/);
+      const numberId = match && this._eid(`number.heater_${match[1]}_target`);
+      const number = numberId && this._hass.states[numberId];
+      if (!number) continue;
+      const max = Number(number.attributes.max) || 60;
+      const target = Number(number.state);
+      const disabled = number.state === "unavailable";
+      const chips = presets.map(({ name, temp }) => {
+        const value = Math.min(Number(temp) || 0, max);
+        const isLoaded = loaded.some((m) => m === String(name).toUpperCase() || m.startsWith(`${String(name).toUpperCase()}-`));
+        const active = value > 0 && target === value;
+        return `
+          <button class="preset ${active ? "active" : ""} ${isLoaded ? "loaded" : ""}" data-action="preset"
+            data-entity="${esc(numberId)}" data-temp="${value}" ${disabled ? "disabled" : ""}
+            title="${esc(`${name}: ${value ? `${value} °C` : "heater off"}${isLoaded ? " (loaded)" : ""}`)}">
+            <span class="preset-name">${esc(name)}</span>
+            <span class="preset-temp">${value ? `${value}°` : "Off"}</span>
+          </button>`;
+      });
+      rows.push(`
+        <div class="presets">
+          <div class="presets-title"><ha-icon icon="mdi:heat-wave"></ha-icon>${breakableLabel(chamberLabel(match[1]))} presets</div>
+          <div class="preset-row">${chips.join("")}</div>
+        </div>`);
+    }
+    return rows.join("");
+  }
+
   _renderStats() {
     const stats = [
       ["sensor.speed_factor", "number.speed_factor", "mdi:speedometer", "Speed"],
@@ -684,6 +748,12 @@ class SnapmakerU1Card extends HTMLElement {
           this._hass.callService("switch", "toggle", { entity_id: this._eid(action.slice(7)) });
         }
         break;
+      case "preset":
+        this._hass.callService("number", "set_value", {
+          entity_id: target.dataset.entity,
+          value: Number(target.dataset.temp),
+        });
+        break;
       case "light":
         this._hass.callService("switch", "toggle", { entity_id: this._eid("switch.work_light") });
         break;
@@ -723,6 +793,7 @@ class SnapmakerU1CardEditor extends HTMLElement {
           show_camera: "Show camera",
           camera_mode: "Camera mode",
           show_controls: "Show controls",
+          show_chamber_presets: "Show chamber heater presets",
         })[schema.name] || schema.name;
       this._form.addEventListener("value-changed", (ev) => {
         this._config = ev.detail.value;
@@ -763,6 +834,7 @@ class SnapmakerU1CardEditor extends HTMLElement {
         },
       },
       { name: "show_controls", selector: { boolean: {} } },
+      { name: "show_chamber_presets", selector: { boolean: {} } },
     ];
     this._form.data = { ...SnapmakerU1Card.getStubConfig(), ...this._config };
   }
@@ -850,6 +922,22 @@ const STYLES = `
   }
   .temp-filament.is-empty { font-weight: 400; color: var(--secondary-text-color); }
   .temp.heating .temp-target { color: var(--state-climate-heat-color, #ff8100); }
+  .presets { display: flex; flex-direction: column; gap: 6px; }
+  .presets-title { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--secondary-text-color); --mdc-icon-size: 16px; }
+  .presets-title ha-icon { color: var(--state-climate-heat-color, #ff8100); }
+  .preset-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(38px, 1fr)); gap: 5px; }
+  .preset {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 0; min-width: 0;
+    border-radius: 10px; border: 1px solid var(--divider-color); background: transparent; cursor: pointer; line-height: 1.15;
+  }
+  .preset:disabled { opacity: .4; cursor: default; }
+  .preset-name { font-size: 12px; font-weight: 600; }
+  .preset-temp { font-size: 11px; color: var(--secondary-text-color); }
+  .preset.active { border-color: var(--state-climate-heat-color, #ff8100); background: color-mix(in srgb, var(--state-climate-heat-color, #ff8100) 14%, transparent); }
+  .preset.active .preset-temp { color: var(--state-climate-heat-color, #ff8100); font-weight: 600; }
+  .preset.loaded::after {
+    content: ""; position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--sm-accent);
+  }
   .stats { display: flex; gap: 8px; flex-wrap: wrap; }
   .stat {
     flex: 1; min-width: 72px; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 12px;
