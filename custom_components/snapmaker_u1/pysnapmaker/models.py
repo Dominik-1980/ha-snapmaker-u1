@@ -27,6 +27,18 @@ class HeaterBedData:
 
 
 @dataclass
+class ChamberHeaterData:
+    """A Klipper ``heater_generic`` (e.g. a Panda Breath or DragonBreath)."""
+
+    temperature: float = 0.0
+    target: float = 0.0
+    power: float = 0.0
+    # Klipper accepts 0 (off) or a target between min_temp and max_temp.
+    min_temp: float = 0.0
+    max_temp: float = 80.0
+
+
+@dataclass
 class PrintStats:
     """Current print job statistics."""
 
@@ -108,6 +120,10 @@ class SnapmakerPrinterData:
     heater_bed: HeaterBedData = field(default_factory=HeaterBedData)
     # Extra temperature sensors (e.g. "chamber", "mcu")
     chamber_sensors: dict[str, float] = field(default_factory=dict)
+    # Chamber heaters {"heater_generic <name>": ChamberHeaterData}
+    chamber_heaters: dict[str, ChamberHeaterData] = field(default_factory=dict)
+    # Chamber filter / blower pins {"output_pin <name>": on}
+    chamber_filters: dict[str, bool] = field(default_factory=dict)
 
     # Motion / overrides
     toolhead: Toolhead = field(default_factory=Toolhead)

@@ -1,7 +1,8 @@
 """Switch platform for the Snapmaker U1 integration.
 
 Provides:
-  - WorkLightSwitch – toggle the printer's work/chamber light (M355 S1/S0)
+  - WorkLightSwitch – toggle the printer's work/chamber light (SET_LED)
+  - ChamberFilterSwitch – Panda Breath / DragonBreath filtration blower
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import SnapmakerDataUpdateCoordinator
+from .definitions import chamber_label, chamber_object_name
 from .sensor import SnapmakerBaseEntity
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,7 +28,10 @@ async def async_setup_entry(
 ) -> None:
     """Set up Snapmaker U1 switch entities from a config entry."""
     coordinator: SnapmakerDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([WorkLightSwitch(coordinator)])
+    entities: list[SwitchEntity] = [WorkLightSwitch(coordinator)]
+    filter_keys = coordinator.client.chamber_filter_keys if coordinator.client else []
+    entities.extend(ChamberFilterSwitch(coordinator, key) for key in filter_keys)
+    async_add_entities(entities)
 
 
 class WorkLightSwitch(SnapmakerBaseEntity, SwitchEntity):
@@ -85,3 +90,47 @@ class WorkLightSwitch(SnapmakerBaseEntity, SwitchEntity):
             self.async_write_ha_state()
         except Exception as exc:
             _LOGGER.error("Error toggling work light: %s", exc)
+
+
+class ChamberFilterSwitch(SnapmakerBaseEntity, SwitchEntity):
+    """Chamber filtration blower exposed as a Klipper output_pin.
+
+    The U1 Extended Firmware adds e.g. ``output_pin dragonbreath_filter`` for
+    the DragonBreath / Panda Breath filter. The device may refuse to turn the
+    filter on while it is heating; Klipper's reported value is the truth.
+    """
+
+    _attr_icon = "mdi:air-filter"
+
+    def __init__(self, coordinator: SnapmakerDataUpdateCoordinator, pin_key: str) -> None:
+        super().__init__(coordinator)
+        self._pin_key = pin_key
+        host = coordinator.entry.data["host"]
+        self._attr_unique_id = f"{host}_pin_{chamber_object_name(pin_key)}"
+        self._attr_name = chamber_label(pin_key)
+
+    @property
+    def is_on(self) -> bool:
+        if self.coordinator.data:
+            return self.coordinator.data.chamber_filters.get(self._pin_key, False)
+        return False
+
+    @property
+    def available(self) -> bool:
+        return bool(self.coordinator.data and self.coordinator.data.is_ready)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._set(False)
+
+    async def _set(self, on: bool) -> None:
+        client = self.coordinator.client
+        if client is None:
+            _LOGGER.warning("Cannot switch chamber filter – client not available")
+            return
+        try:
+            await client.set_chamber_filter(self._pin_key, on)
+        except Exception as exc:
+            _LOGGER.error("Error switching %s: %s", self._pin_key, exc)

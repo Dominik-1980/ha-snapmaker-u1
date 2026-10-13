@@ -38,6 +38,7 @@ from .const import (
     WS_NOTIFY_STATUS_UPDATE,
 )
 from .models import (
+    ChamberHeaterData,
     ExtruderData,
     FanData,
     FilamentSensor,
@@ -55,6 +56,11 @@ _LOGGER = logging.getLogger(__name__)
 # Regex patterns to identify dynamic Moonraker printer objects
 _RE_FILAMENT_SENSOR = re.compile(r"^filament_switch_sensor\s+\S+")
 _RE_TEMP_SENSOR = re.compile(r"^temperature_sensor\s+\S+")
+# Chamber heaters such as the BIQU Panda Breath or DragonBreath, which the U1
+# Extended Firmware exposes to Klipper as a heater_generic.
+_RE_CHAMBER_HEATER = re.compile(r"^heater_generic\s+\S+")
+# Their filtration blower, exposed as an output_pin (e.g. dragonbreath_filter).
+_RE_CHAMBER_FILTER = re.compile(r"^output_pin\s+\S*(filter|breath)\S*$", re.IGNORECASE)
 
 # Webcam name/location substrings that identify a touchscreen mirror rather
 # than the printer's actual camera (see the remote-screen add-on's
@@ -99,6 +105,8 @@ class SnapmakerClient:
         # Dynamically discovered object keys
         self._filament_sensor_keys: list[str] = []
         self._temp_sensor_keys: list[str] = []
+        self._chamber_heater_keys: list[str] = []
+        self._chamber_filter_keys: list[str] = []
 
         # Camera URLs – populated by webcam discovery; fall back to defaults.
         # Initialised to None here; set properly after base_url is available.
@@ -181,6 +189,16 @@ class SnapmakerClient:
         """Names of discovered extra temperature sensor objects."""
         return list(self._temp_sensor_keys)
 
+    @property
+    def chamber_heater_keys(self) -> list[str]:
+        """Discovered ``heater_generic`` objects (chamber heaters)."""
+        return list(self._chamber_heater_keys)
+
+    @property
+    def chamber_filter_keys(self) -> list[str]:
+        """Discovered chamber filter ``output_pin`` objects."""
+        return list(self._chamber_filter_keys)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -242,13 +260,49 @@ class SnapmakerClient:
             self._temp_sensor_keys = [
                 o for o in objects if _RE_TEMP_SENSOR.match(o)
             ]
+            self._chamber_heater_keys = [
+                o for o in objects if _RE_CHAMBER_HEATER.match(o)
+            ]
+            self._chamber_filter_keys = [
+                o for o in objects if _RE_CHAMBER_FILTER.match(o)
+            ]
             _LOGGER.debug(
-                "Discovered filament sensors: %s; extra temp sensors: %s",
+                "Discovered filament sensors: %s; extra temp sensors: %s; "
+                "chamber heaters: %s; chamber filters: %s",
                 self._filament_sensor_keys,
                 self._temp_sensor_keys,
+                self._chamber_heater_keys,
+                self._chamber_filter_keys,
             )
         except Exception as exc:
             _LOGGER.debug("Could not discover dynamic printer objects: %s", exc)
+        await self._fetch_chamber_heater_limits()
+
+    async def _fetch_chamber_heater_limits(self) -> None:
+        """Read each chamber heater's min_temp / max_temp from the Klipper config."""
+        for key in self._chamber_heater_keys:
+            self._data.chamber_heaters.setdefault(key, ChamberHeaterData())
+        if not self._chamber_heater_keys:
+            return
+        try:
+            data = await self._get(
+                ENDPOINT_PRINTER_OBJECTS_QUERY, params={"configfile": "settings"}
+            )
+            settings = (
+                data.get("result", {})
+                .get("status", {})
+                .get("configfile", {})
+                .get("settings", {})
+            )
+            for key in self._chamber_heater_keys:
+                section = settings.get(key.lower(), {})
+                heater = self._data.chamber_heaters[key]
+                if section.get("max_temp"):
+                    heater.max_temp = float(section["max_temp"])
+                if section.get("min_temp") is not None:
+                    heater.min_temp = max(float(section["min_temp"]), 0.0)
+        except Exception as exc:
+            _LOGGER.debug("Could not read chamber heater limits: %s", exc)
 
     async def _discover_webcams(self) -> None:
         """Query /server/webcams/list and use the first real camera's URLs.
@@ -294,7 +348,13 @@ class SnapmakerClient:
 
     def _all_objects(self) -> list[str]:
         """Return the full list of objects to subscribe/query."""
-        return PRINTER_OBJECTS + self._filament_sensor_keys + self._temp_sensor_keys
+        return (
+            PRINTER_OBJECTS
+            + self._filament_sensor_keys
+            + self._temp_sensor_keys
+            + self._chamber_heater_keys
+            + self._chamber_filter_keys
+        )
 
     # ------------------------------------------------------------------
     # WebSocket connection management
@@ -549,6 +609,24 @@ class SnapmakerClient:
                     self._data.chamber_sensors[key] = round(ts["temperature"], 1)
                 changed = True
 
+        # Chamber heaters (Panda Breath / DragonBreath via heater_generic)
+        for key in self._chamber_heater_keys:
+            if key in status:
+                hs = status[key]
+                heater = self._data.chamber_heaters.setdefault(key, ChamberHeaterData())
+                if "temperature" in hs:
+                    heater.temperature = round(hs["temperature"], 1)
+                if "target" in hs:
+                    heater.target = round(hs["target"], 1)
+                if "power" in hs:
+                    heater.power = hs["power"]
+                changed = True
+
+        for key in self._chamber_filter_keys:
+            if key in status and "value" in status[key]:
+                self._data.chamber_filters[key] = (status[key]["value"] or 0) > 0
+                changed = True
+
         if changed:
             await self._notify_callbacks()
 
@@ -700,6 +778,27 @@ class SnapmakerClient:
         await self.execute_gcode(
             f"SET_LED LED=cavity_led RED={level} GREEN={level} BLUE={level} WHITE={level}"
         )
+
+    async def set_chamber_heater_temperature(self, heater_key: str, temp: float) -> None:
+        """Set a chamber heater target; 0 turns it off.
+
+        ``heater_key`` is the Klipper object name, e.g. "heater_generic panda_breath".
+        Klipper rejects non-zero targets outside min_temp..max_temp, so those
+        raise ValueError here instead of being sent.
+        """
+        heater = self._data.chamber_heaters.get(heater_key)
+        if heater is not None and temp and not heater.min_temp <= temp <= heater.max_temp:
+            raise ValueError(
+                f"Target must be 0 (off) or between {heater.min_temp:g} and "
+                f"{heater.max_temp:g} °C"
+            )
+        name = heater_key.split(" ", 1)[-1]
+        await self.execute_gcode(f"SET_HEATER_TEMPERATURE HEATER={name} TARGET={temp:g}")
+
+    async def set_chamber_filter(self, pin_key: str, on: bool) -> None:
+        """Turn a chamber filter output_pin on or off (e.g. DragonBreath filter)."""
+        name = pin_key.split(" ", 1)[-1]
+        await self.execute_gcode(f"SET_PIN PIN={name} VALUE={1 if on else 0}")
 
     async def set_active_tool(self, tool_index: int) -> None:
         """Switch the active extruder tool (T0–T3)."""
