@@ -91,10 +91,30 @@ No Snapmaker account or cloud connection is required. The integration does
 | Part Cooling Fan Speed | 0–100 % |
 | Print Speed Override / Flow Rate Override | `M220` / `M221` |
 | Panda Breath Target | Chamber heater target; `0` turns it off, otherwise between its min and max (e.g. 15–70 °C) |
-| Print File | Pick a file from the printer and start printing it |
+| Print File | Pick a file from the printer and start printing it ([details](#starting-a-print)) |
 | Active Tool | Switch between T0–T3 |
 | Work Light | The cavity light (reads its real state from the printer) |
 | DragonBreath Filter | Chamber filter fan, if present |
+
+### Starting a print
+The **Print File** select lists the G-code files on the printer, newest
+first. New uploads appear automatically. **Choosing a file starts printing
+it immediately**, so double-check the file and that the bed is clear.
+
+It's a dropdown, so on a dashboard use the tile card's *Select options*
+feature (not *Toggle*), or an entities card:
+
+```yaml
+type: tile
+entity: select.<printer>_print_file
+features:
+  - type: select-options
+```
+
+While a print is running or paused, choosing a file shows an error instead
+of starting a second print. The entity is unavailable while the printer
+isn't ready or has no files. You can also start a print from an automation
+with `snapmaker_u1.start_print`.
 
 ### Camera
 - **Webcam**: camera URLs are discovered from Moonraker (`/server/webcams/list`),
@@ -331,6 +351,7 @@ automation:
 | Sensors stuck at `unavailable` | Check Klipper logs via Fluidd; the WebSocket may be reconnecting |
 | Camera shows no image / "500: Internal Server Error" snapshot | The integration couldn't get an image from the printer. Open `http://<printer-ip>/webcam/` and `http://<printer-ip>/webcam/snapshot.jpg` in a browser (use the **printer's** IP). If neither shows the camera, the printer isn't exposing its camera over HTTP. The Snapmaker app can reach the camera through its own service, so seeing the feed there doesn't guarantee an HTTP endpoint exists. The [Extended Firmware](https://github.com/paxx12-snapmaker-u1/SnapmakerU1-Extended-Firmware) provides `/webcam/snapshot.jpg` and a live stream. Check the camera entity's `snapshot_url` / `stream_url` attributes and the Home Assistant log (it lists every URL tried) |
 | Dashboard card not found / "Custom element doesn't exist" | Restart Home Assistant after installing or updating, then hard-refresh the browser (Ctrl+Shift+R). On the mobile app, clear the frontend cache in the app settings |
+| Print File shows "Unavailable" | Update to 1.7.1 or later (older versions misread the printer's file list). It's also unavailable while the printer isn't ready or has no files in its storage |
 | Panda Breath entities missing | Enable it in the printer's Firmware Config page first (Extended Firmware only), then reload the integration |
 | Temperatures show 0 after startup | Klipper may still be initialising; values update within seconds once it's ready |
 
