@@ -81,7 +81,7 @@ STATIC_NUMBER_DESCRIPTIONS: list[SnapmakerNumberEntityDescription] = [
         icon="mdi:speedometer",
         value_fn=lambda coordinator: coordinator.data.speed_factor_pct,
         set_fn=lambda client, v: client.set_speed_factor(int(v)),
-        available_fn=lambda coordinator: coordinator.data.is_printing,
+        available_fn=lambda coordinator: coordinator.data.is_ready,
     ),
     SnapmakerNumberEntityDescription(
         key="flow_rate",
@@ -94,7 +94,7 @@ STATIC_NUMBER_DESCRIPTIONS: list[SnapmakerNumberEntityDescription] = [
         icon="mdi:water-percent",
         value_fn=lambda coordinator: coordinator.data.flow_rate_pct,
         set_fn=lambda client, v: client.set_flow_rate(int(v)),
-        available_fn=lambda coordinator: coordinator.data.is_printing,
+        available_fn=lambda coordinator: coordinator.data.is_ready,
     ),
 ]
 

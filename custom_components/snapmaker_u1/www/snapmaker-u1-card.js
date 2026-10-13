@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.7.0";
+const CARD_VERSION = "1.7.3";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -33,6 +33,7 @@ const STATUS = {
 
 const CONFIRM_MS = 4000;
 const SNAPSHOT_REFRESH_MS = 5000;
+const LIVE_FIRST_FRAME_MS = 8000;
 
 const esc = (value) =>
   String(value ?? "").replace(
@@ -58,6 +59,39 @@ const formatDuration = (seconds) => {
   return `${s}s`;
 };
 
+// Update `parent` to match `html` while keeping existing nodes wherever
+// possible. The printer pushes several updates a second; rebuilding the
+// buttons with innerHTML each time replaced the element under the user's
+// finger mid-tap, so taps were lost.
+const patchHTML = (parent, html) => {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  patchChildren(parent, template.content);
+};
+
+const patchChildren = (from, to) => {
+  const toNodes = Array.from(to.childNodes);
+  toNodes.forEach((toNode, i) => {
+    const fromNode = from.childNodes[i];
+    if (!fromNode) {
+      from.appendChild(toNode.cloneNode(true));
+    } else if (fromNode.nodeType !== toNode.nodeType || fromNode.nodeName !== toNode.nodeName) {
+      from.replaceChild(toNode.cloneNode(true), fromNode);
+    } else if (fromNode.nodeType === Node.ELEMENT_NODE) {
+      for (const { name } of Array.from(fromNode.attributes)) {
+        if (!toNode.hasAttribute(name)) fromNode.removeAttribute(name);
+      }
+      for (const { name, value } of Array.from(toNode.attributes)) {
+        if (fromNode.getAttribute(name) !== value) fromNode.setAttribute(name, value);
+      }
+      patchChildren(fromNode, toNode);
+    } else if (fromNode.nodeValue !== toNode.nodeValue) {
+      fromNode.nodeValue = toNode.nodeValue;
+    }
+  });
+  while (from.childNodes.length > toNodes.length) from.removeChild(from.lastChild);
+};
+
 // Mirrors chamber_label() in definitions.py.
 const chamberLabel = (name) => {
   const lower = String(name).toLowerCase();
@@ -69,6 +103,10 @@ const chamberLabel = (name) => {
   }
   return lower.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 };
+
+// "DragonBreath" -> "Dragon<wbr>Breath" so long camel-case names wrap like
+// "Panda Breath" instead of running out of the tile.
+const breakableLabel = (label) => esc(label).replace(/([a-z])([A-Z])/g, "$1<wbr>$2");
 
 const prettyFilename = (name) =>
   String(name || "")
@@ -174,6 +212,9 @@ class SnapmakerU1Card extends HTMLElement {
   _roles(prefix) {
     return Object.keys(this._printer?.entities || {})
       .filter((role) => role.startsWith(prefix))
+      // Skip leftovers the printer no longer provides (e.g. a Panda Breath
+      // replaced by a DragonBreath): HA keeps them as "restored" entities.
+      .filter((role) => !this._state(role)?.attributes?.restored)
       .sort();
   }
 
@@ -189,6 +230,7 @@ class SnapmakerU1Card extends HTMLElement {
         <div class="camera" data-action="camera" hidden>
           <img alt="Printer camera" />
           <div class="camera-badge"><span class="dot"></span><span class="camera-label">LIVE</span></div>
+          <div class="camera-error"><ha-icon icon="mdi:camera-off"></ha-icon><span>Camera unavailable</span></div>
         </div>
         <div class="content"></div>
       </ha-card>`;
@@ -201,8 +243,13 @@ class SnapmakerU1Card extends HTMLElement {
         this._cameraFallback = true;
         this._cameraSrc = "";
         this._updateCamera();
+        return;
       }
+      // Snapshots failing too: say so instead of showing a black box. The
+      // snapshot timer keeps retrying, and a successful load clears this.
+      if (this._cameraSrc) this._cameraEl.classList.add("is-error");
     });
+    this._imgEl.addEventListener("load", () => this._cameraEl.classList.remove("is-error"));
     this._cameraSrc = "";
   }
 
@@ -234,7 +281,7 @@ class SnapmakerU1Card extends HTMLElement {
         .join(";") + `|${this._armed?.action ?? ""}`;
     if (signature === this._signature) return;
     this._signature = signature;
-    this._contentEl.innerHTML = this._renderContent();
+    patchHTML(this._contentEl, this._renderContent());
   }
 
   _updateCamera() {
@@ -261,11 +308,25 @@ class SnapmakerU1Card extends HTMLElement {
         this._snapshotTimer = setInterval(refresh, SNAPSHOT_REFRESH_MS);
       }
     } else if (token) {
-      this._setCamera(`/api/camera_proxy_stream/${camera.entity_id}?token=${token}`);
+      const src = `/api/camera_proxy_stream/${camera.entity_id}?token=${token}`;
+      if (src !== this._cameraSrc) {
+        this._setCamera(src);
+        // A stream that stays open without sending a frame never fires
+        // "error"; treat no picture after a few seconds as a failure too.
+        clearTimeout(this._liveWatchdog);
+        this._liveWatchdog = setTimeout(() => {
+          if (this._cameraSrc === src && !this._imgEl.naturalWidth && !this._cameraFallback) {
+            this._cameraFallback = true;
+            this._cameraSrc = "";
+            this._updateCamera();
+          }
+        }, LIVE_FIRST_FRAME_MS);
+      }
     }
   }
 
   _setCamera(src, keepTimer = false) {
+    if (!src) clearTimeout(this._liveWatchdog);
     if (!keepTimer && this._snapshotTimer) {
       clearInterval(this._snapshotTimer);
       this._snapshotTimer = null;
@@ -401,8 +462,10 @@ class SnapmakerU1Card extends HTMLElement {
     const tiles = [];
     const activeTool = this._state("select.active_tool")?.state;
     // "extruder" is T0, "extruder1" is T1, and so on.
+    // Nozzle sensor roles are "sensor.extruder_extruder_temperature" (the
+    // unique ID repeats the extruder key); accept the short form as well.
     const extruders = this._roles("sensor.extruder")
-      .map((role) => role.match(/^sensor\.(extruder(\d*))_temperature$/))
+      .map((role) => role.match(/^sensor\.(?:extruder\d*_)?(extruder(\d*))_temperature$/))
       .filter(Boolean)
       .map(([role, key, n]) => ({ role, key, index: n ? Number(n) : 0 }))
       .sort((a, b) => a.index - b.index);
@@ -413,7 +476,7 @@ class SnapmakerU1Card extends HTMLElement {
           label: tool,
           icon: "mdi:printer-3d-nozzle",
           current: num(this._state(role)),
-          target: num(this._state(`sensor.${key}_target`)),
+          target: num(this._state(role.replace(/_temperature$/, "_target"))),
           unit: this._state(role)?.attributes.unit_of_measurement,
           moreInfo: this._eid(`number.${key}_target_setpoint`) || this._eid(role),
           active: extruders.length > 1 && activeTool === tool,
@@ -473,7 +536,7 @@ class SnapmakerU1Card extends HTMLElement {
     return `
       <button class="temp ${heating ? "heating" : ""} ${active ? "active" : ""}"
         data-action="more-info" data-entity="${esc(moreInfo || "")}">
-        <div class="temp-head"><ha-icon icon="${icon}"></ha-icon><span>${esc(label)}</span>${this._swatch(filament)}</div>
+        <div class="temp-head"><ha-icon icon="${icon}"></ha-icon><span class="temp-label" title="${esc(label)}">${breakableLabel(label)}</span>${this._swatch(filament)}</div>
         <div class="temp-value">${current != null ? Math.round(current) : "–"}<span>${esc(u)}</span></div>
         <div class="temp-target">${heating ? `→ ${Math.round(target)}${esc(u)}` : target == null ? "&nbsp;" : "Off"}</div>
         ${this._filamentLine(filament)}
@@ -510,8 +573,10 @@ class SnapmakerU1Card extends HTMLElement {
         return `
           <button class="stat" data-action="more-info" data-entity="${esc(this._eid(setpoint) || this._eid(role))}">
             <ha-icon icon="${icon}"></ha-icon>
-            <span class="stat-label">${label}</span>
-            <span class="stat-value">${value != null ? `${Math.round(value)}%` : "–"}</span>
+            <span class="stat-text">
+              <span class="stat-value">${value != null ? `${Math.round(value)}%` : "–"}</span>
+              <span class="stat-label">${label}</span>
+            </span>
           </button>`;
       });
     return stats.length ? `<div class="stats">${stats.join("")}</div>` : "";
@@ -710,6 +775,12 @@ const STYLES = `
   .camera { position: relative; background: #000; cursor: pointer; aspect-ratio: 16 / 9; }
   .camera[hidden] { display: none; }
   .camera img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .camera-error {
+    display: none; position: absolute; inset: 0; align-items: center; justify-content: center; gap: 8px;
+    color: rgba(255,255,255,.75); font-size: 14px; --mdc-icon-size: 22px;
+  }
+  .camera.is-error img, .camera.is-error .camera-badge { visibility: hidden; }
+  .camera.is-error .camera-error { display: flex; }
   .camera-badge {
     position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 6px;
     padding: 3px 8px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff;
@@ -763,6 +834,7 @@ const STYLES = `
   }
   .temp.active { border-color: var(--sm-accent); box-shadow: inset 0 0 0 1px var(--sm-accent); }
   .temp-head { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--secondary-text-color); --mdc-icon-size: 16px; }
+  .temp-label { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
   .temp.heating .temp-head ha-icon { color: var(--state-climate-heat-color, #ff8100); }
   .temp-value { font-size: 20px; font-weight: 700; }
   .temp-value span { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); margin-left: 1px; }
@@ -780,12 +852,15 @@ const STYLES = `
   .temp.heating .temp-target { color: var(--state-climate-heat-color, #ff8100); }
   .stats { display: flex; gap: 8px; flex-wrap: wrap; }
   .stat {
-    flex: 1; min-width: 90px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 12px;
+    flex: 1; min-width: 72px; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 12px;
+    overflow: hidden;
     border: 1px solid var(--divider-color); background: transparent; cursor: pointer; --mdc-icon-size: 18px;
   }
   .stat ha-icon { color: var(--sm-accent); }
-  .stat-label { font-size: 12px; color: var(--secondary-text-color); }
-  .stat-value { margin-left: auto; font-weight: 600; font-size: 14px; }
+  .stat-text { display: flex; flex-direction: column; min-width: 0; text-align: left; line-height: 1.2; }
+  .stat-value { font-weight: 600; font-size: 14px; }
+  .stat-label { font-size: 11px; color: var(--secondary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat ha-icon { flex: none; }
   .controls { display: flex; gap: 8px; flex-wrap: wrap; }
   .control {
     flex: 1; min-width: 58px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 6px;
