@@ -65,6 +65,9 @@ def _make_filament_value_fn(sensor_key: str):
         sensor = self.coordinator.data.filament_sensors.get(sensor_key)
         if sensor is None:
             return None
+        # A disabled sensor's last reading is stale; don't report a runout.
+        if not sensor.enabled:
+            return False
         # Problem = True means filament runout (no filament detected)
         return not sensor.filament_detected
 

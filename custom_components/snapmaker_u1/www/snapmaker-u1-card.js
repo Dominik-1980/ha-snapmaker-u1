@@ -227,7 +227,9 @@ class SnapmakerU1Card extends HTMLElement {
       entityIds
         .map((eid) => {
           const s = this._hass.states[eid];
-          return s ? `${s.state}|${s.attributes.klipper_message ?? ""}` : "";
+          // last_updated also changes when only attributes change (e.g. a
+          // new spool colour or heater target with the same state).
+          return s ? `${s.state}|${s.last_updated ?? ""}|${s.attributes.klipper_message ?? ""}` : "";
         })
         .join(";") + `|${this._armed?.action ?? ""}`;
     if (signature === this._signature) return;
