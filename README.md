@@ -186,7 +186,7 @@ What it shows:
 - 🎛️ **Controls**: Pause/Resume, Cancel, Light, Filter (Panda Breath), Home
   and E-Stop. Cancel and E-Stop need a second tap to confirm.
 
-Options (all optional, also available in the visual editor):
+Options (all optional; all except `chamber_presets` are also in the visual editor):
 
 | Option | Default | Description |
 |---|---|---|
@@ -197,7 +197,7 @@ Options (all optional, also available in the visual editor):
 | `camera_mode` | `live` | `live` video or `snapshot` (refreshed every 5 seconds) |
 | `show_controls` | `true` | Show the control buttons |
 | `show_chamber_presets` | `true` | Show filament preset buttons for a Panda Breath / DragonBreath |
-| `chamber_presets` | see below | Your own preset list, e.g. `[{name: ABS, temp: 55}, {name: PLA, temp: 0}]` |
+| `chamber_presets` | see below | Your own preset list (YAML only), e.g. `[{name: ABS, temp: 55}, {name: PLA, temp: 0}]` |
 
 Example:
 
@@ -288,7 +288,7 @@ filament type and the chamber heater goes to its recommended temperature:
 - The preset that's currently set is highlighted (Off presets in grey), and a small dot marks
   the filament type that's loaded in a nozzle.
 - Targets are kept within the heater's minimum and maximum from the printer's config.
-- To use your own values, set `chamber_presets` on the card:
+- To use your own values, set `chamber_presets` in the card's YAML (⋮ → *Show code editor*):
 
 ```yaml
 type: custom:snapmaker-u1-card
