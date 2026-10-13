@@ -1,0 +1,745 @@
+/*
+ * Snapmaker U1 dashboard card.
+ *
+ * Shipped with the snapmaker_u1 integration and loaded automatically, so
+ * "custom:snapmaker-u1-card" can be added to any dashboard. Shows the live
+ * camera, print progress, layers, time left, ETA, nozzle/bed/chamber
+ * temperatures and print controls for one printer.
+ */
+
+const CARD_VERSION = "1.5.0";
+const DOMAIN = "snapmaker_u1";
+
+const ACCENTS = {
+  theme: "var(--primary-color)",
+  orange: "#ff8a00",
+  blue: "#2f80ed",
+  green: "#27ae60",
+  purple: "#8e5cf6",
+  red: "#eb5757",
+  teal: "#14b8a6",
+  pink: "#ec4899",
+};
+
+const STATUS = {
+  printing: { label: "Printing", icon: "mdi:printer-3d-nozzle", tone: "accent" },
+  paused: { label: "Paused", icon: "mdi:pause-circle", tone: "warning" },
+  complete: { label: "Complete", icon: "mdi:check-circle", tone: "success" },
+  cancelled: { label: "Cancelled", icon: "mdi:close-circle", tone: "muted" },
+  error: { label: "Error", icon: "mdi:alert-circle", tone: "error" },
+  standby: { label: "Ready", icon: "mdi:printer-3d", tone: "muted" },
+  offline: { label: "Offline", icon: "mdi:lan-disconnect", tone: "error" },
+};
+
+const CONFIRM_MS = 4000;
+const SNAPSHOT_REFRESH_MS = 5000;
+
+const esc = (value) =>
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  );
+
+const num = (state) => {
+  if (!state || state.state === "unavailable" || state.state === "unknown") return null;
+  const value = Number(state.state);
+  return Number.isFinite(value) ? value : null;
+};
+
+const formatDuration = (seconds) => {
+  if (seconds == null || seconds < 0) return "–";
+  const s = Math.round(seconds);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m`;
+  return `${s}s`;
+};
+
+const prettyFilename = (name) =>
+  String(name || "")
+    .split("/")
+    .pop()
+    .replace(/\.(gcode|g|3mf|bgcode)$/i, "");
+
+class SnapmakerU1Card extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("snapmaker-u1-card-editor");
+  }
+
+  static getStubConfig() {
+    return { show_camera: true, camera_mode: "live", show_controls: true, accent_color: "theme" };
+  }
+
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._printers = null;
+    this._loading = false;
+    this._armed = null;
+    this._signature = "";
+    this._cameraSrc = "";
+    this._cameraFallback = false;
+    this._snapshotTimer = null;
+    this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
+  }
+
+  setConfig(config) {
+    this._config = {
+      show_camera: true,
+      camera_mode: "live",
+      show_controls: true,
+      accent_color: "theme",
+      ...config,
+    };
+    this._signature = "";
+    this._cameraFallback = false;
+    this._buildSkeleton();
+    if (this._hass) this._update();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._printers && !this._loading) this._loadPrinters();
+    this._update();
+  }
+
+  connectedCallback() {
+    this._connected = true;
+    this._signature = "";
+    if (this._hass) this._update();
+  }
+
+  disconnectedCallback() {
+    // Close the MJPEG stream so hidden cards don't keep the camera busy.
+    this._connected = false;
+    this._setCamera("");
+  }
+
+  getCardSize() {
+    return this._config?.show_camera === false ? 6 : 10;
+  }
+
+  getGridOptions() {
+    return { columns: 12, min_columns: 6, rows: "auto" };
+  }
+
+  // ------------------------------------------------------------------
+  // Data
+  // ------------------------------------------------------------------
+
+  async _loadPrinters() {
+    this._loading = true;
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/entities` });
+      this._printers = result.printers || [];
+    } catch (err) {
+      this._error = `Could not load Snapmaker U1 printers: ${err.message || err}`;
+      this._printers = [];
+    }
+    this._loading = false;
+    this._signature = "";
+    this._update();
+  }
+
+  get _printer() {
+    if (!this._printers || !this._printers.length) return null;
+    const wanted = this._config.entry_id;
+    return (wanted && this._printers.find((p) => p.entry_id === wanted)) || this._printers[0];
+  }
+
+  _eid(role) {
+    return this._printer?.entities?.[role];
+  }
+
+  _state(role) {
+    const eid = this._eid(role);
+    return eid ? this._hass.states[eid] : undefined;
+  }
+
+  _roles(prefix) {
+    return Object.keys(this._printer?.entities || {})
+      .filter((role) => role.startsWith(prefix))
+      .sort();
+  }
+
+  // ------------------------------------------------------------------
+  // Rendering
+  // ------------------------------------------------------------------
+
+  _buildSkeleton() {
+    const accent = ACCENTS[this._config.accent_color] || this._config.accent_color || ACCENTS.theme;
+    this.shadowRoot.innerHTML = `
+      <style>${STYLES}</style>
+      <ha-card style="--sm-accent:${esc(accent)}">
+        <div class="camera" data-action="camera" hidden>
+          <img alt="Printer camera" />
+          <div class="camera-badge"><span class="dot"></span><span class="camera-label">LIVE</span></div>
+        </div>
+        <div class="content"></div>
+      </ha-card>`;
+    this._contentEl = this.shadowRoot.querySelector(".content");
+    this._cameraEl = this.shadowRoot.querySelector(".camera");
+    this._imgEl = this.shadowRoot.querySelector(".camera img");
+    this._imgEl.addEventListener("error", () => {
+      // Live MJPEG failed: fall back to refreshed snapshots.
+      if (!this._cameraFallback && this._config.camera_mode !== "snapshot") {
+        this._cameraFallback = true;
+        this._cameraSrc = "";
+        this._updateCamera();
+      }
+    });
+    this._cameraSrc = "";
+  }
+
+  _update() {
+    if (!this._hass || !this._config || !this._contentEl) return;
+    if (!this._printers) {
+      this._contentEl.innerHTML = `<div class="empty">Loading…</div>`;
+      return;
+    }
+    if (!this._printer) {
+      this._contentEl.innerHTML = `<div class="empty">${esc(
+        this._error || "No Snapmaker U1 printer found. Add the Snapmaker U1 integration first."
+      )}</div>`;
+      return;
+    }
+
+    this._updateCamera();
+
+    // Only re-render when something the card shows has changed.
+    const entityIds = Object.values(this._printer.entities);
+    const signature =
+      entityIds
+        .map((eid) => {
+          const s = this._hass.states[eid];
+          return s ? `${s.state}|${s.attributes.klipper_message ?? ""}` : "";
+        })
+        .join(";") + `|${this._armed?.action ?? ""}`;
+    if (signature === this._signature) return;
+    this._signature = signature;
+    this._contentEl.innerHTML = this._renderContent();
+  }
+
+  _updateCamera() {
+    const camera = this._state("camera.webcam");
+    const show = this._config.show_camera !== false && camera && camera.state !== "unavailable";
+    this._cameraEl.hidden = !show;
+    if (!show || !this._connected) {
+      this._setCamera("");
+      return;
+    }
+    const snapshot = this._config.camera_mode === "snapshot" || this._cameraFallback;
+    this.shadowRoot.querySelector(".camera-label").textContent = snapshot ? "SNAPSHOT" : "LIVE";
+    this._cameraEl.classList.toggle("is-live", !snapshot);
+    const token = camera.attributes.access_token;
+    if (snapshot) {
+      if (!this._snapshotTimer) {
+        const refresh = () => {
+          const cam = this._state("camera.webcam");
+          if (cam?.attributes.entity_picture) {
+            this._setCamera(`${cam.attributes.entity_picture}&_t=${Date.now()}`, true);
+          }
+        };
+        refresh();
+        this._snapshotTimer = setInterval(refresh, SNAPSHOT_REFRESH_MS);
+      }
+    } else if (token) {
+      this._setCamera(`/api/camera_proxy_stream/${camera.entity_id}?token=${token}`);
+    }
+  }
+
+  _setCamera(src, keepTimer = false) {
+    if (!keepTimer && this._snapshotTimer) {
+      clearInterval(this._snapshotTimer);
+      this._snapshotTimer = null;
+    }
+    if (src === this._cameraSrc || !this._imgEl) return;
+    this._cameraSrc = src;
+    if (src) this._imgEl.src = src;
+    else this._imgEl.removeAttribute("src");
+  }
+
+  _status() {
+    const ready = this._state("binary_sensor.printer_ready");
+    const printState = this._state("sensor.print_state");
+    if (!printState || printState.state === "unavailable" || ready?.state === "off") {
+      return "offline";
+    }
+    if (this._state("binary_sensor.has_error")?.state === "on") return "error";
+    return STATUS[printState.state] ? printState.state : "standby";
+  }
+
+  _renderContent() {
+    const status = this._status();
+    const info = STATUS[status];
+    const active = status === "printing" || status === "paused";
+    const light = this._state("switch.work_light");
+
+    return `
+      <div class="header">
+        <div class="title">
+          <ha-icon icon="mdi:printer-3d"></ha-icon>
+          <span>${esc(this._config.title || this._printer.title || "Snapmaker U1")}</span>
+        </div>
+        <div class="pill tone-${info.tone}">
+          <ha-icon icon="${info.icon}"></ha-icon>${info.label}
+        </div>
+      </div>
+      ${this._renderAlerts()}
+      ${active ? this._renderProgress(status) : this._renderIdle(status)}
+      ${this._renderTemps()}
+      ${this._renderStats()}
+      ${this._config.show_controls !== false ? this._renderControls(status, light) : ""}`;
+  }
+
+  _renderAlerts() {
+    const alerts = [];
+    const error = this._state("binary_sensor.has_error");
+    if (error?.state === "on") {
+      alerts.push(error.attributes.klipper_message || "The printer reported an error.");
+    }
+    for (const role of this._roles("binary_sensor.filament_")) {
+      const s = this._state(role);
+      if (s?.state === "on") {
+        alerts.push(`${s.attributes.friendly_name || "Filament sensor"}: filament not detected`);
+      }
+    }
+    return alerts
+      .map(
+        (text) =>
+          `<div class="alert"><ha-icon icon="mdi:alert"></ha-icon><span>${esc(text)}</span></div>`
+      )
+      .join("");
+  }
+
+  _renderProgress(status) {
+    const progress = num(this._state("sensor.print_progress")) ?? 0;
+    const layer = num(this._state("sensor.current_layer"));
+    const layers = num(this._state("sensor.total_layers"));
+    const remaining = num(this._state("sensor.time_remaining"));
+    const elapsed = num(this._state("sensor.print_duration"));
+    const etaState = this._state("sensor.print_eta");
+    let eta = "–";
+    if (etaState && !["unknown", "unavailable"].includes(etaState.state)) {
+      const date = new Date(etaState.state);
+      if (!Number.isNaN(date.getTime())) {
+        const sameDay = date.toDateString() === new Date().toDateString();
+        eta = date.toLocaleString(this._hass.locale?.language, {
+          ...(sameDay ? {} : { weekday: "short" }),
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+    }
+    const filename = prettyFilename(this._state("sensor.filename")?.state);
+    const radius = 42;
+    const circumference = 2 * Math.PI * radius;
+    const offset = circumference * (1 - Math.min(Math.max(progress, 0), 100) / 100);
+
+    return `
+      <div class="progress">
+        <div class="ring ${status === "paused" ? "paused" : ""}">
+          <svg viewBox="0 0 100 100">
+            <circle class="track" cx="50" cy="50" r="${radius}"></circle>
+            <circle class="bar" cx="50" cy="50" r="${radius}"
+              stroke-dasharray="${circumference.toFixed(2)}"
+              stroke-dashoffset="${offset.toFixed(2)}"></circle>
+          </svg>
+          <div class="ring-label"><span class="pct">${Math.round(progress)}</span><span class="unit">%</span></div>
+        </div>
+        <div class="job">
+          <div class="filename" title="${esc(filename)}">${esc(filename || "Printing")}</div>
+          <div class="facts">
+            ${this._fact("mdi:layers-triple", "Layer", layer != null && layers ? `${layer} / ${layers}` : "–")}
+            ${this._fact("mdi:timer-sand", "Remaining", formatDuration(remaining))}
+            ${this._fact("mdi:clock-end", "ETA", eta)}
+            ${this._fact("mdi:timer-outline", "Elapsed", formatDuration(elapsed))}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  _renderIdle(status) {
+    const filename = prettyFilename(this._state("sensor.filename")?.state);
+    const text =
+      status === "offline"
+        ? "Printer is not reachable"
+        : status === "complete" && filename
+          ? `Finished ${filename}`
+          : status === "cancelled" && filename
+            ? `Cancelled ${filename}`
+            : "Ready to print";
+    return `<div class="idle"><ha-icon icon="${STATUS[status].icon}"></ha-icon><span>${esc(text)}</span></div>`;
+  }
+
+  _fact(icon, label, value) {
+    return `
+      <div class="fact">
+        <ha-icon icon="${icon}"></ha-icon>
+        <div><div class="fact-label">${label}</div><div class="fact-value">${esc(value)}</div></div>
+      </div>`;
+  }
+
+  _renderTemps() {
+    const tiles = [];
+    const activeTool = this._state("select.active_tool")?.state;
+    // "extruder" is T0, "extruder1" is T1, and so on.
+    const extruders = this._roles("sensor.extruder")
+      .map((role) => role.match(/^sensor\.(extruder(\d*))_temperature$/))
+      .filter(Boolean)
+      .map(([role, key, n]) => ({ role, key, index: n ? Number(n) : 0 }))
+      .sort((a, b) => a.index - b.index);
+    extruders.forEach(({ role, key, index }) => {
+      const tool = `T${index}`;
+      tiles.push(
+        this._tempTile({
+          label: tool,
+          icon: "mdi:printer-3d-nozzle",
+          current: num(this._state(role)),
+          target: num(this._state(`sensor.${key}_target`)),
+          unit: this._state(role)?.attributes.unit_of_measurement,
+          moreInfo: this._eid(`number.${key}_target_setpoint`) || this._eid(role),
+          active: extruders.length > 1 && activeTool === tool,
+        })
+      );
+    });
+    if (this._eid("sensor.bed_temperature")) {
+      const bed = this._state("sensor.bed_temperature");
+      tiles.push(
+        this._tempTile({
+          label: "Bed",
+          icon: "mdi:radiator",
+          current: num(bed),
+          target: num(this._state("sensor.bed_target")),
+          unit: bed?.attributes.unit_of_measurement,
+          moreInfo: this._eid("number.bed_target") || this._eid("sensor.bed_temperature"),
+        })
+      );
+    }
+    for (const role of this._roles("sensor.chamber_")) {
+      if (!/chamber|cavity/i.test(role.slice("sensor.chamber_".length))) continue;
+      const s = this._state(role);
+      tiles.push(
+        this._tempTile({
+          label: "Chamber",
+          icon: "mdi:thermometer",
+          current: num(s),
+          target: null,
+          unit: s?.attributes.unit_of_measurement,
+          moreInfo: this._eid(role),
+        })
+      );
+    }
+    return tiles.length ? `<div class="temps">${tiles.join("")}</div>` : "";
+  }
+
+  _tempTile({ label, icon, current, target, unit, moreInfo, active = false }) {
+    const heating = target != null && target > 0;
+    const u = unit || "°C";
+    return `
+      <button class="temp ${heating ? "heating" : ""} ${active ? "active" : ""}"
+        data-action="more-info" data-entity="${esc(moreInfo || "")}">
+        <div class="temp-head"><ha-icon icon="${icon}"></ha-icon><span>${esc(label)}</span></div>
+        <div class="temp-value">${current != null ? Math.round(current) : "–"}<span>${esc(u)}</span></div>
+        <div class="temp-target">${heating ? `→ ${Math.round(target)}${esc(u)}` : target == null ? "&nbsp;" : "Off"}</div>
+      </button>`;
+  }
+
+  _renderStats() {
+    const stats = [
+      ["sensor.speed_factor", "number.speed_factor", "mdi:speedometer", "Speed"],
+      ["sensor.flow_rate", "number.flow_rate", "mdi:water-percent", "Flow"],
+      ["sensor.fan_speed", "number.fan_speed", "mdi:fan", "Fan"],
+    ]
+      .filter(([role]) => this._eid(role))
+      .map(([role, setpoint, icon, label]) => {
+        const value = num(this._state(role));
+        return `
+          <button class="stat" data-action="more-info" data-entity="${esc(this._eid(setpoint) || this._eid(role))}">
+            <ha-icon icon="${icon}"></ha-icon>
+            <span class="stat-label">${label}</span>
+            <span class="stat-value">${value != null ? `${Math.round(value)}%` : "–"}</span>
+          </button>`;
+      });
+    return stats.length ? `<div class="stats">${stats.join("")}</div>` : "";
+  }
+
+  _renderControls(status, light) {
+    const buttons = [];
+    const active = status === "printing" || status === "paused";
+    const offline = status === "offline";
+    if (status === "printing" && this._eid("button.pause_print")) {
+      buttons.push(this._control("pause", "mdi:pause", "Pause"));
+    }
+    if (status === "paused" && this._eid("button.resume_print")) {
+      buttons.push(this._control("resume", "mdi:play", "Resume", "primary"));
+    }
+    if (active && this._eid("button.cancel_print")) {
+      buttons.push(this._control("cancel", "mdi:stop", "Cancel", "danger", true));
+    }
+    if (light) {
+      buttons.push(
+        this._control("light", light.state === "on" ? "mdi:lightbulb-on" : "mdi:lightbulb-outline", "Light", light.state === "on" ? "on" : "", false, offline)
+      );
+    }
+    if (!active && this._eid("button.home_all")) {
+      buttons.push(this._control("home", "mdi:home-import-outline", "Home", "", false, offline));
+    }
+    if (this._eid("button.emergency_stop")) {
+      buttons.push(this._control("estop", "mdi:alert-octagon", "E-Stop", "danger", true, offline));
+    }
+    return `<div class="controls">${buttons.join("")}</div>`;
+  }
+
+  _control(action, icon, label, variant = "", confirm = false, disabled = false) {
+    const armed = this._armed?.action === action;
+    return `
+      <button class="control ${variant} ${armed ? "armed" : ""}" data-action="${action}"
+        ${confirm ? 'data-confirm="1"' : ""} ${disabled ? "disabled" : ""}>
+        <ha-icon icon="${armed ? "mdi:alert" : icon}"></ha-icon>
+        <span>${armed ? "Tap again" : label}</span>
+      </button>`;
+  }
+
+  // ------------------------------------------------------------------
+  // Actions
+  // ------------------------------------------------------------------
+
+  _onClick(ev) {
+    const target = ev.composedPath().find((el) => el.dataset && el.dataset.action);
+    if (!target || target.disabled) return;
+    const action = target.dataset.action;
+
+    if (action === "camera") {
+      this._moreInfo(this._eid("camera.webcam"));
+      return;
+    }
+    if (action === "more-info") {
+      this._moreInfo(target.dataset.entity);
+      return;
+    }
+
+    // Destructive actions need a second tap within a few seconds.
+    if (target.dataset.confirm && this._armed?.action !== action) {
+      clearTimeout(this._armed?.timer);
+      this._armed = {
+        action,
+        timer: setTimeout(() => {
+          this._armed = null;
+          this._update();
+        }, CONFIRM_MS),
+      };
+      this._update();
+      return;
+    }
+    clearTimeout(this._armed?.timer);
+    this._armed = null;
+
+    const press = (role) =>
+      this._hass.callService("button", "press", { entity_id: this._eid(role) });
+    switch (action) {
+      case "pause":
+        press("button.pause_print");
+        break;
+      case "resume":
+        press("button.resume_print");
+        break;
+      case "cancel":
+        press("button.cancel_print");
+        break;
+      case "home":
+        press("button.home_all");
+        break;
+      case "estop":
+        press("button.emergency_stop");
+        break;
+      case "light":
+        this._hass.callService("switch", "toggle", { entity_id: this._eid("switch.work_light") });
+        break;
+    }
+    this._update();
+  }
+
+  _moreInfo(entityId) {
+    if (!entityId) return;
+    this.dispatchEvent(
+      new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true })
+    );
+  }
+}
+
+class SnapmakerU1CardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._form) this._form.hass = hass;
+    else this._render();
+  }
+
+  _render() {
+    if (!this._hass || !this._config) return;
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (schema) =>
+        ({
+          entry_id: "Printer",
+          title: "Title (optional)",
+          accent_color: "Accent color",
+          show_camera: "Show camera",
+          camera_mode: "Camera mode",
+          show_controls: "Show controls",
+        })[schema.name] || schema.name;
+      this._form.addEventListener("value-changed", (ev) => {
+        this._config = ev.detail.value;
+        this.dispatchEvent(
+          new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true })
+        );
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.schema = [
+      { name: "entry_id", selector: { config_entry: { integration: DOMAIN } } },
+      { name: "title", selector: { text: {} } },
+      {
+        name: "accent_color",
+        selector: {
+          select: {
+            mode: "dropdown",
+            custom_value: true,
+            options: Object.keys(ACCENTS).map((key) => ({
+              value: key,
+              label: key === "theme" ? "Theme color" : key[0].toUpperCase() + key.slice(1),
+            })),
+          },
+        },
+      },
+      { name: "show_camera", selector: { boolean: {} } },
+      {
+        name: "camera_mode",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: [
+              { value: "live", label: "Live video" },
+              { value: "snapshot", label: "Snapshot every 5 s" },
+            ],
+          },
+        },
+      },
+      { name: "show_controls", selector: { boolean: {} } },
+    ];
+    this._form.data = { ...SnapmakerU1Card.getStubConfig(), ...this._config };
+  }
+}
+
+const STYLES = `
+  :host { display: block; }
+  ha-card { overflow: hidden; }
+  button { font: inherit; color: inherit; }
+  .camera { position: relative; background: #000; cursor: pointer; aspect-ratio: 16 / 9; }
+  .camera[hidden] { display: none; }
+  .camera img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .camera-badge {
+    position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 6px;
+    padding: 3px 8px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff;
+    font-size: 11px; font-weight: 600; letter-spacing: .06em;
+  }
+  .camera-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: #aaa; }
+  .camera.is-live .camera-badge .dot { background: #ff4d4f; animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .content { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .empty { padding: 8px 0; color: var(--secondary-text-color); }
+  .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; min-width: 0; }
+  .title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title ha-icon { color: var(--sm-accent); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; white-space: nowrap; --mdc-icon-size: 16px;
+  }
+  .tone-accent { color: var(--sm-accent); background: color-mix(in srgb, var(--sm-accent) 16%, transparent); }
+  .tone-warning { color: var(--warning-color, #ffa600); background: color-mix(in srgb, var(--warning-color, #ffa600) 16%, transparent); }
+  .tone-success { color: var(--success-color, #43a047); background: color-mix(in srgb, var(--success-color, #43a047) 16%, transparent); }
+  .tone-error { color: var(--error-color, #db4437); background: color-mix(in srgb, var(--error-color, #db4437) 16%, transparent); }
+  .tone-muted { color: var(--secondary-text-color); background: color-mix(in srgb, var(--secondary-text-color) 14%, transparent); }
+  .alert {
+    display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 12px;
+    color: var(--error-color, #db4437); background: color-mix(in srgb, var(--error-color, #db4437) 12%, transparent);
+    font-size: 14px; --mdc-icon-size: 20px;
+  }
+  .progress { display: flex; align-items: center; gap: 16px; }
+  .ring { position: relative; width: 104px; height: 104px; flex: none; }
+  .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring circle { fill: none; stroke-width: 9; }
+  .ring .track { stroke: color-mix(in srgb, var(--sm-accent) 15%, transparent); }
+  .ring .bar { stroke: var(--sm-accent); stroke-linecap: round; transition: stroke-dashoffset .6s ease; }
+  .ring.paused .bar { stroke: var(--warning-color, #ffa600); }
+  .ring-label { position: absolute; inset: 0; display: flex; align-items: baseline; justify-content: center; padding-top: 34px; }
+  .ring-label .pct { font-size: 28px; font-weight: 700; }
+  .ring-label .unit { font-size: 14px; color: var(--secondary-text-color); margin-left: 1px; }
+  .job { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+  .filename { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .fact { display: flex; gap: 6px; align-items: center; min-width: 0; --mdc-icon-size: 18px; }
+  .fact ha-icon { color: var(--sm-accent); flex: none; }
+  .fact-label { font-size: 11px; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: .04em; }
+  .fact-value { font-size: 14px; font-weight: 600; white-space: nowrap; }
+  .idle { display: flex; align-items: center; gap: 10px; color: var(--secondary-text-color); font-size: 15px; --mdc-icon-size: 22px; }
+  .temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+  .temp {
+    text-align: left; border: 1px solid var(--divider-color); border-radius: 14px; padding: 10px;
+    background: var(--secondary-background-color, transparent); cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+  }
+  .temp.active { border-color: var(--sm-accent); box-shadow: inset 0 0 0 1px var(--sm-accent); }
+  .temp-head { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--secondary-text-color); --mdc-icon-size: 16px; }
+  .temp.heating .temp-head ha-icon { color: var(--state-climate-heat-color, #ff8100); }
+  .temp-value { font-size: 20px; font-weight: 700; }
+  .temp-value span { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); margin-left: 1px; }
+  .temp-target { font-size: 12px; color: var(--secondary-text-color); }
+  .temp.heating .temp-target { color: var(--state-climate-heat-color, #ff8100); }
+  .stats { display: flex; gap: 8px; flex-wrap: wrap; }
+  .stat {
+    flex: 1; min-width: 90px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 12px;
+    border: 1px solid var(--divider-color); background: transparent; cursor: pointer; --mdc-icon-size: 18px;
+  }
+  .stat ha-icon { color: var(--sm-accent); }
+  .stat-label { font-size: 12px; color: var(--secondary-text-color); }
+  .stat-value { margin-left: auto; font-weight: 600; font-size: 14px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .control {
+    flex: 1; min-width: 72px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 6px;
+    border-radius: 14px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;
+    background: color-mix(in srgb, var(--primary-text-color) 7%, transparent); transition: background .15s, transform .1s;
+  }
+  .control:active { transform: scale(.97); }
+  .control:disabled { opacity: .4; cursor: default; }
+  .control.primary, .control.on { color: var(--sm-accent); background: color-mix(in srgb, var(--sm-accent) 16%, transparent); }
+  .control.danger { color: var(--error-color, #db4437); }
+  .control.armed { color: #fff; background: var(--error-color, #db4437); }
+  @media (max-width: 420px) {
+    .progress { flex-direction: column; align-items: stretch; }
+    .ring { align-self: center; }
+  }
+`;
+
+if (!customElements.get("snapmaker-u1-card")) {
+  customElements.define("snapmaker-u1-card", SnapmakerU1Card);
+  customElements.define("snapmaker-u1-card-editor", SnapmakerU1CardEditor);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "snapmaker-u1-card",
+    name: "Snapmaker U1",
+    description: "Printer dashboard: live camera, progress, time left, temperatures and controls.",
+    preview: true,
+    documentationURL: "https://github.com/kbaker827/ha-snapmaker-u1#dashboard-card",
+  });
+  console.info(`%c SNAPMAKER-U1-CARD %c ${CARD_VERSION} `, "color:#fff;background:#ff8a00;font-weight:700", "");
+}

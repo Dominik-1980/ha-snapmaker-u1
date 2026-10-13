@@ -9,11 +9,15 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 from .coordinator import SnapmakerDataUpdateCoordinator
+from .frontend import async_register_frontend
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -114,6 +118,15 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_START_PRINT, handle_start_print, START_PRINT_SCHEMA
     )
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the bundled dashboard card."""
+    try:
+        await async_register_frontend(hass)
+    except Exception:  # noqa: BLE001 - the card is optional; never block setup
+        _LOGGER.exception("Could not register the Snapmaker U1 dashboard card")
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
