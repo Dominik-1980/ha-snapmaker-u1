@@ -778,12 +778,14 @@ class SnapmakerClient:
             files = data.get("result", [])
             # Moonraker reports each file's name as "path" (older releases
             # used "filename") and already sorts newest first; keep that order.
+            # Don't drop dot-paths: the U1 lists USB-drive files under
+            # ".udisk/", and Moonraker already filters reserved directories.
             names = []
             for f in files:
                 if not isinstance(f, dict):
                     continue
                 name = f.get("path") or f.get("filename")
-                if isinstance(name, str) and name and not name.startswith("."):
+                if isinstance(name, str) and name:
                     names.append(name)
             self._data.available_files = names
             _LOGGER.debug("Fetched %d G-code files", len(self._data.available_files))
