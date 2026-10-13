@@ -22,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import SnapmakerDataUpdateCoordinator
+from .definitions import chamber_label, chamber_object_name
 from .pysnapmaker.client import SnapmakerClient
 from .sensor import SnapmakerBaseEntity
 
@@ -135,7 +136,42 @@ async def async_setup_entry(
             SnapmakerExtruderNumberEntity(coordinator, desc, extruder_key, label)
         )
 
+    # Chamber heater targets (Panda Breath / DragonBreath); 0 turns it off
+    heater_keys = coordinator.client.chamber_heater_keys if coordinator.client else []
+    for heater_key in heater_keys:
+        heater = coordinator.data.chamber_heaters.get(heater_key) if coordinator.data else None
+        desc = SnapmakerNumberEntityDescription(
+            key=f"heater_{chamber_object_name(heater_key)}_target",
+            name=f"{chamber_label(heater_key)} Target",
+            device_class=NumberDeviceClass.TEMPERATURE,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            native_min_value=0,
+            native_max_value=heater.max_temp if heater else 80,
+            native_step=1,
+            mode=NumberMode.BOX,
+            icon="mdi:heat-wave",
+            value_fn=_make_chamber_heater_value_fn(heater_key),
+            set_fn=_make_chamber_heater_set_fn(heater_key),
+            available_fn=lambda coordinator: coordinator.data.is_ready,
+        )
+        entities.append(SnapmakerNumberEntity(coordinator, desc))
+
     async_add_entities(entities)
+
+
+def _make_chamber_heater_value_fn(heater_key: str) -> Callable:
+    def fn(coordinator: SnapmakerDataUpdateCoordinator) -> float | None:
+        heater = coordinator.data.chamber_heaters.get(heater_key)
+        return heater.target if heater is not None else None
+
+    return fn
+
+
+def _make_chamber_heater_set_fn(heater_key: str) -> Callable:
+    async def fn(client: SnapmakerClient, value: float) -> None:
+        await client.set_chamber_heater_temperature(heater_key, value)
+
+    return fn
 
 
 def _make_nozzle_value_fn(extruder_key: str) -> Callable:

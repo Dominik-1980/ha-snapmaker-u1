@@ -18,6 +18,8 @@ from .definitions import (
     EXTRUDER_SENSORS,
     PRINTER_SENSORS,
     SnapmakerSensorEntityDescription,
+    chamber_label,
+    chamber_object_name,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -84,7 +86,48 @@ async def async_setup_entry(
         )
         entities.append(SnapmakerChamberSensor(coordinator, desc, sensor_key, label))
 
+    # Chamber heaters (Panda Breath / DragonBreath on U1 Extended Firmware)
+    heater_keys = coordinator.client.chamber_heater_keys if coordinator.client else []
+    for heater_key in heater_keys:
+        entities.append(
+            SnapmakerSensor(
+                coordinator,
+                SnapmakerSensorEntityDescription(
+                    key=f"heater_{chamber_object_name(heater_key)}_temperature",
+                    name=f"{chamber_label(heater_key)} Temperature",
+                    device_class=CHAMBER_SENSOR_TEMPLATE.device_class,
+                    native_unit_of_measurement=CHAMBER_SENSOR_TEMPLATE.native_unit_of_measurement,
+                    state_class=CHAMBER_SENSOR_TEMPLATE.state_class,
+                    icon="mdi:heat-wave",
+                    value_fn=_make_chamber_heater_value_fn(heater_key),
+                    extra_attributes_fn=_make_chamber_heater_attrs_fn(heater_key),
+                ),
+            )
+        )
+
     async_add_entities(entities)
+
+
+def _make_chamber_heater_value_fn(heater_key: str):
+    def value_fn(self: SnapmakerSensor) -> float | None:
+        heater = self.coordinator.data.chamber_heaters.get(heater_key)
+        return heater.temperature if heater else None
+
+    return value_fn
+
+
+def _make_chamber_heater_attrs_fn(heater_key: str):
+    def attrs_fn(self: SnapmakerSensor) -> dict[str, Any]:
+        heater = self.coordinator.data.chamber_heaters.get(heater_key)
+        if heater is None:
+            return {}
+        return {
+            "target": heater.target,
+            "power": round(heater.power, 2),
+            "max_temp": heater.max_temp,
+        }
+
+    return attrs_fn
 
 
 def _make_chamber_value_fn(sensor_key: str):

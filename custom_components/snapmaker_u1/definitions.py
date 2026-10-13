@@ -255,6 +255,32 @@ CHAMBER_SENSOR_TEMPLATE = SnapmakerSensorEntityDescription(
 
 
 # ---------------------------------------------------------------------------
+# Chamber heaters (Panda Breath / DragonBreath via U1 Extended Firmware)
+# ---------------------------------------------------------------------------
+
+_CHAMBER_LABELS = {"dragonbreath": "DragonBreath", "panda_breath": "Panda Breath"}
+
+
+def chamber_object_name(object_key: str) -> str:
+    """'heater_generic panda_breath' -> 'panda_breath'."""
+    return object_key.split(" ", 1)[-1]
+
+
+def chamber_label(object_key: str) -> str:
+    """Friendly label for a chamber heater or filter object.
+
+    'heater_generic panda_breath' -> 'Panda Breath',
+    'output_pin dragonbreath_filter' -> 'DragonBreath Filter'.
+    """
+    name = chamber_object_name(object_key).lower()
+    for raw, label in _CHAMBER_LABELS.items():
+        if name.startswith(raw):
+            rest = name[len(raw):].strip("_").replace("_", " ").title()
+            return f"{label} {rest}".strip()
+    return name.replace("_", " ").title()
+
+
+# ---------------------------------------------------------------------------
 # Extruder sensors (instantiated per detected extruder in sensor.py)
 # ---------------------------------------------------------------------------
 

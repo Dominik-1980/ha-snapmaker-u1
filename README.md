@@ -77,6 +77,27 @@ No Snapmaker account or cloud connection is required.
 > running on the U1. Test camera URLs against the printer's IP, e.g.
 > `http://<printer-ip>/webcam/snapshot.jpg`, not your Home Assistant address.
 
+### Panda Breath / DragonBreath chamber heater
+If you run the [U1 Extended Firmware](https://github.com/paxx12-snapmaker-u1/SnapmakerU1-Extended-Firmware)
+and have enabled a BIQU **Panda Breath** (or **DragonBreath**) in its Firmware
+Config page, the printer's Klipper controls the heater. This integration
+picks it up automatically, with no extra setup:
+
+| Entity | What it does |
+|---|---|
+| `sensor.<printer>_panda_breath_temperature` | Chamber heater temperature (attributes: target, power, max_temp) |
+| `number.<printer>_panda_breath_target` | Set the chamber target (°C). `0` turns heating off. The maximum comes from Klipper's `max_temp` |
+| `switch.<printer>_dragonbreath_filter` | Filtration blower (DragonBreath). The device may refuse to turn it on while heating |
+
+Any Klipper `heater_generic` is treated as a chamber heater, and any
+`output_pin` with "filter" or "breath" in its name as a filter switch. Restart
+Home Assistant (or reload the integration) after enabling the heater on the
+printer. The dashboard card shows a Panda Breath tile and a Filter button.
+
+> With **stock** U1 firmware the Panda Breath isn't visible to the printer.
+> In that case, use the Panda Breath's own firmware 1.0.4 MQTT /
+> Home Assistant discovery instead.
+
 ### Services
 | Service | Description |
 |---|---|
@@ -105,10 +126,11 @@ What it shows:
 - **Progress ring** with the file name, layer (e.g. 142 / 230), time
   remaining, ETA and elapsed time.
 - **Temperature tiles** for each nozzle (T0–T3, with the active tool
-  highlighted), the bed and the chamber. Tap a tile to set its target.
+  highlighted), the bed, the chamber and the Panda Breath (if present).
+  Tap a tile to set its target.
 - **Speed, flow and fan** at a glance. Tap to adjust.
 - **Alerts** for printer errors and filament runout.
-- **Controls**: Pause/Resume, Cancel, Light, Home and E-Stop. Cancel and
+- **Controls**: Pause/Resume, Cancel, Light, Filter (Panda Breath), Home and E-Stop. Cancel and
   E-Stop need a second tap to confirm.
 
 Options (all optional, also available in the visual editor):

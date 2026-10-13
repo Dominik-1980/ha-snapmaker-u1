@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.5.0";
+const CARD_VERSION = "1.6.0";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -56,6 +56,18 @@ const formatDuration = (seconds) => {
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m`;
   return `${s}s`;
+};
+
+// Mirrors chamber_label() in definitions.py.
+const chamberLabel = (name) => {
+  const lower = String(name).toLowerCase();
+  for (const [raw, label] of [["dragonbreath", "DragonBreath"], ["panda_breath", "Panda Breath"]]) {
+    if (lower.startsWith(raw)) {
+      const rest = lower.slice(raw.length).replace(/^_+|_+$/g, "").replace(/_/g, " ");
+      return `${label} ${rest.replace(/\b\w/g, (c) => c.toUpperCase())}`.trim();
+    }
+  }
+  return lower.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
 const prettyFilename = (name) =>
@@ -433,6 +445,22 @@ class SnapmakerU1Card extends HTMLElement {
         })
       );
     }
+    // Chamber heaters (Panda Breath / DragonBreath on U1 Extended Firmware)
+    for (const role of this._roles("sensor.heater_")) {
+      const match = role.match(/^sensor\.heater_(.+)_temperature$/);
+      if (!match) continue;
+      const s = this._state(role);
+      tiles.push(
+        this._tempTile({
+          label: chamberLabel(match[1]),
+          icon: "mdi:heat-wave",
+          current: num(s),
+          target: s?.attributes.target ?? 0,
+          unit: s?.attributes.unit_of_measurement,
+          moreInfo: this._eid(`number.heater_${match[1]}_target`) || this._eid(role),
+        })
+      );
+    }
     return tiles.length ? `<div class="temps">${tiles.join("")}</div>` : "";
   }
 
@@ -483,6 +511,14 @@ class SnapmakerU1Card extends HTMLElement {
     if (light) {
       buttons.push(
         this._control("light", light.state === "on" ? "mdi:lightbulb-on" : "mdi:lightbulb-outline", "Light", light.state === "on" ? "on" : "", false, offline)
+      );
+    }
+    for (const role of this._roles("switch.pin_")) {
+      const filter = this._state(role);
+      if (!filter) continue;
+      const on = filter.state === "on";
+      buttons.push(
+        this._control(`toggle:${role}`, on ? "mdi:air-filter" : "mdi:air-purifier-off", "Filter", on ? "on" : "", false, offline)
       );
     }
     if (!active && this._eid("button.home_all")) {
@@ -555,6 +591,11 @@ class SnapmakerU1Card extends HTMLElement {
         break;
       case "estop":
         press("button.emergency_stop");
+        break;
+      default:
+        if (action.startsWith("toggle:")) {
+          this._hass.callService("switch", "toggle", { entity_id: this._eid(action.slice(7)) });
+        }
         break;
       case "light":
         this._hass.callService("switch", "toggle", { entity_id: this._eid("switch.work_light") });
@@ -715,7 +756,7 @@ const STYLES = `
   .stat-value { margin-left: auto; font-weight: 600; font-size: 14px; }
   .controls { display: flex; gap: 8px; flex-wrap: wrap; }
   .control {
-    flex: 1; min-width: 72px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 6px;
+    flex: 1; min-width: 58px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 6px;
     border-radius: 14px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;
     background: color-mix(in srgb, var(--primary-text-color) 7%, transparent); transition: background .15s, transform .1s;
   }
@@ -737,7 +778,7 @@ if (!customElements.get("snapmaker-u1-card")) {
   window.customCards.push({
     type: "snapmaker-u1-card",
     name: "Snapmaker U1",
-    description: "Printer dashboard: live camera, progress, time left, temperatures and controls.",
+    description: "Printer dashboard: live camera, progress, time left, temperatures, Panda Breath and controls.",
     preview: true,
     documentationURL: "https://github.com/kbaker827/ha-snapmaker-u1#dashboard-card",
   });
