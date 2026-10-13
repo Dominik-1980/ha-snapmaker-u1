@@ -32,12 +32,12 @@ const STATUS = {
 };
 
 // Chamber heater (Panda Breath / DragonBreath) presets per filament type.
-// PLA, PETG and TPU print best with the chamber heater off; engineering
-// filaments benefit from a warm chamber. Values are capped at the heater's
+// PLA and TPU print best with the chamber heater off, PETG likes a little
+// warmth, and engineering filaments benefit from a warm chamber. Values are capped at the heater's
 // max (60 °C on a Panda Breath). Override with `chamber_presets`.
 const DEFAULT_CHAMBER_PRESETS = [
   { name: "PLA", temp: 0 },
-  { name: "PETG", temp: 0 },
+  { name: "PETG", temp: 35 },
   { name: "TPU", temp: 0 },
   { name: "ABS", temp: 50 },
   { name: "ASA", temp: 50 },

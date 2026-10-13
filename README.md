@@ -279,7 +279,8 @@ filament type and the chamber heater goes to its recommended temperature:
 
 | Preset | Chamber target |
 |---|---|
-| PLA, PETG, TPU | Off (these print best in a cool chamber) |
+| PLA, TPU | Off (these print best in a cool chamber) |
+| PETG | 35 °C (a little warmth helps layer adhesion, far below where PETG softens) |
 | ABS, ASA | 50 °C |
 | PA (nylon) | 55 °C |
 | PC | 60 °C |
@@ -293,7 +294,7 @@ filament type and the chamber heater goes to its recommended temperature:
 type: custom:snapmaker-u1-card
 chamber_presets:
   - name: PETG
-    temp: 35
+    temp: 40
   - name: ABS
     temp: 55
   - name: PC
