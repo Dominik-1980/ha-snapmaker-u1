@@ -33,6 +33,8 @@ class ChamberHeaterData:
     temperature: float = 0.0
     target: float = 0.0
     power: float = 0.0
+    # Klipper accepts 0 (off) or a target between min_temp and max_temp.
+    min_temp: float = 0.0
     max_temp: float = 80.0
 
 

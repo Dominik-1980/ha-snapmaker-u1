@@ -124,6 +124,7 @@ def _make_chamber_heater_attrs_fn(heater_key: str):
         return {
             "target": heater.target,
             "power": round(heater.power, 2),
+            "min_temp": heater.min_temp,
             "max_temp": heater.max_temp,
         }
 

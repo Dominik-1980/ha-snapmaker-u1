@@ -279,7 +279,7 @@ class SnapmakerClient:
         await self._fetch_chamber_heater_limits()
 
     async def _fetch_chamber_heater_limits(self) -> None:
-        """Read each chamber heater's max_temp from the Klipper config."""
+        """Read each chamber heater's min_temp / max_temp from the Klipper config."""
         for key in self._chamber_heater_keys:
             self._data.chamber_heaters.setdefault(key, ChamberHeaterData())
         if not self._chamber_heater_keys:
@@ -295,9 +295,12 @@ class SnapmakerClient:
                 .get("settings", {})
             )
             for key in self._chamber_heater_keys:
-                max_temp = settings.get(key.lower(), {}).get("max_temp")
-                if max_temp:
-                    self._data.chamber_heaters[key].max_temp = float(max_temp)
+                section = settings.get(key.lower(), {})
+                heater = self._data.chamber_heaters[key]
+                if section.get("max_temp"):
+                    heater.max_temp = float(section["max_temp"])
+                if section.get("min_temp") is not None:
+                    heater.min_temp = max(float(section["min_temp"]), 0.0)
         except Exception as exc:
             _LOGGER.debug("Could not read chamber heater limits: %s", exc)
 
@@ -780,7 +783,15 @@ class SnapmakerClient:
         """Set a chamber heater target; 0 turns it off.
 
         ``heater_key`` is the Klipper object name, e.g. "heater_generic panda_breath".
+        Klipper rejects non-zero targets outside min_temp..max_temp, so those
+        raise ValueError here instead of being sent.
         """
+        heater = self._data.chamber_heaters.get(heater_key)
+        if heater is not None and temp and not heater.min_temp <= temp <= heater.max_temp:
+            raise ValueError(
+                f"Target must be 0 (off) or between {heater.min_temp:g} and "
+                f"{heater.max_temp:g} °C"
+            )
         name = heater_key.split(" ", 1)[-1]
         await self.execute_gcode(f"SET_HEATER_TEMPERATURE HEATER={name} TARGET={temp:g}")
 

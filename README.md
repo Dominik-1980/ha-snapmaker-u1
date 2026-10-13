@@ -88,7 +88,7 @@ No Snapmaker account or cloud connection is required. The integration does
 | T0–T3 Target Temperature | Set each nozzle temperature (0–300 °C) |
 | Part Cooling Fan Speed | 0–100 % |
 | Print Speed Override / Flow Rate Override | `M220` / `M221` |
-| Panda Breath Target | Chamber heater target; `0` turns it off |
+| Panda Breath Target | Chamber heater target; `0` turns it off, otherwise between its min and max (e.g. 15–70 °C) |
 | Print File | Pick a file from the printer and start printing it |
 | Active Tool | Switch between T0–T3 |
 | Work Light | The cavity light (reads its real state from the printer) |
@@ -195,7 +195,7 @@ extra setup:
 | Entity | What it does |
 |---|---|
 | `sensor.<printer>_panda_breath_temperature` | Chamber heater temperature (attributes: target, power, max_temp) |
-| `number.<printer>_panda_breath_target` | Set the chamber target (°C). `0` turns heating off. The maximum comes from Klipper's `max_temp` |
+| `number.<printer>_panda_breath_target` | Set the chamber target (°C). `0` turns heating off; any other value must be between the heater's Klipper `min_temp` and `max_temp` (e.g. 15–70 °C) |
 | `switch.<printer>_dragonbreath_filter` | Filter fan (DragonBreath). The device may refuse to turn it on while heating |
 
 On the dashboard card it appears as a **Panda Breath** temperature tile (tap
