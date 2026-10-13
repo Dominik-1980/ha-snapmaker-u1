@@ -66,6 +66,21 @@ async def async_setup_entry(
                 SnapmakerExtruderSensor(coordinator, extruder_desc, extruder_key, label)
             )
 
+        # Loaded filament (type/colour from RFID or the touchscreen)
+        if coordinator.client and coordinator.client.has_filament_config:
+            entities.append(
+                SnapmakerSensor(
+                    coordinator,
+                    SnapmakerSensorEntityDescription(
+                        key=f"{extruder_key}_filament",
+                        name=f"{label} Filament",
+                        icon="mdi:palette",
+                        value_fn=_make_filament_value_fn(i),
+                        extra_attributes_fn=_make_filament_attrs_fn(i),
+                    ),
+                )
+            )
+
     # Chamber / extra temperature sensors (e.g. chamber thermistor, MCU temp)
     temp_keys = coordinator.client.temp_sensor_keys if coordinator.client else []
     for sensor_key in temp_keys:
@@ -106,6 +121,41 @@ async def async_setup_entry(
         )
 
     async_add_entities(entities)
+
+
+def _make_filament_value_fn(index: int):
+    """State: 'PLA Basic', or 'Empty' when nothing is loaded."""
+
+    def value_fn(self: SnapmakerSensor) -> str | None:
+        slot = self.coordinator.data.filament_slots.get(index)
+        if slot is None:
+            return None
+        if not slot.loaded:
+            return "Empty"
+        return slot.name
+
+    return value_fn
+
+
+def _make_filament_attrs_fn(index: int):
+    def attrs_fn(self: SnapmakerSensor) -> dict[str, Any]:
+        slot = self.coordinator.data.filament_slots.get(index)
+        if slot is None:
+            return {}
+        # An untouched slot reports white; only trust the colour once the
+        # material is known.
+        color = slot.color if slot.material else None
+        return {
+            "color": color,
+            "alpha": slot.alpha if color else None,
+            "material": slot.material,
+            "sub_type": slot.sub_type,
+            "vendor": slot.vendor,
+            "loaded": slot.loaded,
+            "official": slot.official,
+        }
+
+    return attrs_fn
 
 
 def _make_chamber_heater_value_fn(heater_key: str):

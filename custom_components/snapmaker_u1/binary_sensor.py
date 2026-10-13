@@ -40,11 +40,15 @@ async def async_setup_entry(
     # Add dynamic filament runout sensors for each discovered sensor
     if coordinator.client:
         for key in coordinator.client.filament_sensor_keys:
-            # Friendly name: strip "filament_switch_sensor " prefix
-            sensor_name = key.replace("filament_switch_sensor ", "").replace("_", " ").title()
+            # Friendly name: "filament_motion_sensor e0_filament" -> "E0 Filament"
+            sensor_name = key.split(" ", 1)[-1].replace("_", " ").title()
             desc = SnapmakerBinarySensorEntityDescription(
                 key=f"filament_{key}",
-                name=f"{sensor_name} Filament",
+                name=(
+                    sensor_name
+                    if sensor_name.lower().endswith("filament")
+                    else f"{sensor_name} Filament"
+                ),
                 device_class=BinarySensorDeviceClass.PROBLEM,
                 icon="mdi:alert-circle",
                 value_fn=_make_filament_value_fn(key),

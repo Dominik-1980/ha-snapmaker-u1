@@ -39,6 +39,29 @@ class ChamberHeaterData:
 
 
 @dataclass
+class FilamentSlot:
+    """Filament loaded in one nozzle, as the U1 reports it.
+
+    Comes from Snapmaker's ``print_task_config`` Klipper object, filled from
+    the spool's RFID tag or from what was picked on the touchscreen.
+    """
+
+    vendor: str | None = None
+    material: str | None = None      # e.g. "PLA"
+    sub_type: str | None = None      # e.g. "Basic", "Matte"
+    color: str | None = None         # "#RRGGBB"
+    alpha: int = 255
+    loaded: bool = False
+    official: bool = False
+
+    @property
+    def name(self) -> str | None:
+        """'PLA Basic', 'PETG' or None when nothing is known."""
+        parts = [p for p in (self.material, self.sub_type) if p]
+        return " ".join(parts) or None
+
+
+@dataclass
 class PrintStats:
     """Current print job statistics."""
 
@@ -136,6 +159,8 @@ class SnapmakerPrinterData:
 
     # Filament sensors  {object_key: FilamentSensor}
     filament_sensors: dict[str, FilamentSensor] = field(default_factory=dict)
+    # Loaded filament per nozzle {0: FilamentSlot, ...}
+    filament_slots: dict[int, FilamentSlot] = field(default_factory=dict)
 
     # File management
     available_files: list[str] = field(default_factory=list)

@@ -2,8 +2,8 @@
 
 > A Home Assistant custom integration for the **Snapmaker U1** 3D printer,
 > inspired by [ha-bambulab](https://github.com/greghesp/ha-bambulab).
-> Live status, temperatures, camera, print controls, BIQU Panda Breath
-> support and a built-in dashboard card. No cloud needed.
+> Live status, temperatures, loaded filament colours, camera, print controls,
+> BIQU Panda Breath support and a built-in dashboard card. No cloud needed.
 
 ![Snapmaker U1 dashboard card: printing (light and dark), paused and idle](docs/images/card-overview.png)
 
@@ -15,6 +15,7 @@ shows your printer's real camera and values.</sub>
 - [How it works](#how-it-works)
 - [Features](#features)
 - [Dashboard card](#dashboard-card)
+- [Filament type and colour](#filament-type-and-colour)
 - [Panda Breath / DragonBreath chamber heater](#panda-breath--dragonbreath-chamber-heater)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -56,6 +57,7 @@ No Snapmaker account or cloud connection is required. The integration does
 | Filename | Name of the file being printed |
 | Bed Temperature / Bed Target | Heated-bed current and target temperature |
 | T0–T3 Nozzle Temperature / Target | Per-nozzle current and target temperature (auto-detects up to 4) |
+| T0–T3 Filament | Loaded filament, e.g. `PLA Basic`, or `Empty`. Colour, vendor and more as attributes ([details](#filament-type-and-colour)) |
 | Chamber / extra temperature sensors | Every Klipper `temperature_sensor` (e.g. chamber, MCU) |
 | Panda Breath Temperature | Chamber heater temperature, if present ([details](#panda-breath--dragonbreath-chamber-heater)) |
 | Part Cooling Fan | Fan speed in % |
@@ -70,7 +72,7 @@ No Snapmaker account or cloud connection is required. The integration does
 | Printing | On while a print is running |
 | Paused | On while a print is paused |
 | Error | On when a Klipper/print error is active (message in attributes) |
-| Filament runout | One per filament sensor; on when filament is **not** detected |
+| Filament runout | One per filament sensor (the U1's `filament_motion_sensor e0…e3` and any `filament_switch_sensor`); on when filament is **not** detected |
 
 ### Buttons
 | Button | Action |
@@ -153,6 +155,8 @@ What it shows:
 - 🌡️ **Temperature tiles** for each nozzle (T0–T3, with the active tool
   highlighted), the bed, the chamber and the Panda Breath (if present).
   Tap a tile to set its target.
+- 🎨 **Loaded filament** on each nozzle tile: a colour dot and the material
+  (e.g. `PLA Basic`). A dashed ring means the nozzle is empty.
 - **Speed, flow and fan** at a glance. Tap to adjust.
 - ⚠️ **Alerts** for printer errors and filament runout.
 - 🎛️ **Controls**: Pause/Resume, Cancel, Light, Filter (Panda Breath), Home
@@ -181,6 +185,38 @@ camera_mode: live
 Light and dark mode follow your Home Assistant theme. Renamed entities keep
 working, because the card looks entities up through the integration rather
 than by entity ID.
+
+---
+
+## Filament type and colour
+
+The U1 knows what's loaded in each nozzle. With Snapmaker spools it reads
+the RFID tag; with other spools it uses what you picked on the touchscreen.
+The integration reads this from the printer (Klipper's `print_task_config`
+object), so it works on stock firmware with no setup.
+
+Each nozzle gets a **T0–T3 Filament** sensor:
+
+| | Example |
+|---|---|
+| State | `PLA Basic`, `PETG`, or `Empty` |
+| `color` | `#FF6A00` (`null` while unknown) |
+| `alpha` | `255` (transparency, 0–255) |
+| `material` / `sub_type` | `PLA` / `Basic` |
+| `vendor` | `Snapmaker` |
+| `loaded` | `true` when filament is in the nozzle |
+| `official` | `true` for a Snapmaker RFID spool |
+
+It updates live when you load or change a spool. Example template:
+
+```yaml
+{{ state_attr('sensor.<printer>_t0_filament', 'color') }}
+```
+
+Notes:
+- Third-party spools don't have a Snapmaker RFID tag, so their type and
+  colour only appear after you set them on the printer's touchscreen.
+- Multi-colour (gradient) spools show their first colour.
 
 ---
 
