@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.6.0";
+const CARD_VERSION = "1.7.0";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -227,7 +227,9 @@ class SnapmakerU1Card extends HTMLElement {
       entityIds
         .map((eid) => {
           const s = this._hass.states[eid];
-          return s ? `${s.state}|${s.attributes.klipper_message ?? ""}` : "";
+          // last_updated also changes when only attributes change (e.g. a
+          // new spool colour or heater target with the same state).
+          return s ? `${s.state}|${s.last_updated ?? ""}|${s.attributes.klipper_message ?? ""}` : "";
         })
         .join(";") + `|${this._armed?.action ?? ""}`;
     if (signature === this._signature) return;
@@ -415,6 +417,7 @@ class SnapmakerU1Card extends HTMLElement {
           unit: this._state(role)?.attributes.unit_of_measurement,
           moreInfo: this._eid(`number.${key}_target_setpoint`) || this._eid(role),
           active: extruders.length > 1 && activeTool === tool,
+          filament: this._state(`sensor.${key}_filament`),
         })
       );
     });
@@ -464,16 +467,35 @@ class SnapmakerU1Card extends HTMLElement {
     return tiles.length ? `<div class="temps">${tiles.join("")}</div>` : "";
   }
 
-  _tempTile({ label, icon, current, target, unit, moreInfo, active = false }) {
+  _tempTile({ label, icon, current, target, unit, moreInfo, active = false, filament = null }) {
     const heating = target != null && target > 0;
     const u = unit || "°C";
     return `
       <button class="temp ${heating ? "heating" : ""} ${active ? "active" : ""}"
         data-action="more-info" data-entity="${esc(moreInfo || "")}">
-        <div class="temp-head"><ha-icon icon="${icon}"></ha-icon><span>${esc(label)}</span></div>
+        <div class="temp-head"><ha-icon icon="${icon}"></ha-icon><span>${esc(label)}</span>${this._swatch(filament)}</div>
         <div class="temp-value">${current != null ? Math.round(current) : "–"}<span>${esc(u)}</span></div>
         <div class="temp-target">${heating ? `→ ${Math.round(target)}${esc(u)}` : target == null ? "&nbsp;" : "Off"}</div>
+        ${this._filamentLine(filament)}
       </button>`;
+  }
+
+  // Loaded filament from the printer (RFID tag or touchscreen selection).
+  _swatch(filament) {
+    if (!filament || ["unknown", "unavailable"].includes(filament.state)) return "";
+    const color = filament.attributes.color;
+    if (filament.attributes.loaded === false || !color) {
+      return `<span class="swatch is-empty" title="${esc(filament.state)}"></span>`;
+    }
+    return `<span class="swatch" style="background:${esc(color)}" title="${esc(color)}"></span>`;
+  }
+
+  _filamentLine(filament) {
+    if (!filament || ["unknown", "unavailable"].includes(filament.state)) return "";
+    const empty = filament.attributes.loaded === false;
+    return `<div class="temp-filament ${empty ? "is-empty" : ""}" title="${esc(
+      [filament.attributes.vendor, filament.state].filter(Boolean).join(" ")
+    )}">${esc(filament.state)}</div>`;
   }
 
   _renderStats() {
@@ -745,6 +767,16 @@ const STYLES = `
   .temp-value { font-size: 20px; font-weight: 700; }
   .temp-value span { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); margin-left: 1px; }
   .temp-target { font-size: 12px; color: var(--secondary-text-color); }
+  .swatch {
+    display: inline-block; box-sizing: border-box; margin-left: auto; align-self: center;
+    flex: 0 0 14px; width: 14px; height: 14px; border-radius: 50%;
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--primary-text-color) 30%, transparent);
+  }
+  .swatch.is-empty { background: transparent; box-shadow: none; border: 1.5px dashed var(--secondary-text-color); }
+  .temp-filament {
+    margin-top: 2px; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .temp-filament.is-empty { font-weight: 400; color: var(--secondary-text-color); }
   .temp.heating .temp-target { color: var(--state-climate-heat-color, #ff8100); }
   .stats { display: flex; gap: 8px; flex-wrap: wrap; }
   .stat {

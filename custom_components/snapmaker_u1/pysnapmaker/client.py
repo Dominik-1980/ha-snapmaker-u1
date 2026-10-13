@@ -39,6 +39,7 @@ from .const import (
 )
 from .models import (
     ChamberHeaterData,
+    FilamentSlot,
     ExtruderData,
     FanData,
     FilamentSensor,
@@ -54,7 +55,9 @@ from .models import (
 _LOGGER = logging.getLogger(__name__)
 
 # Regex patterns to identify dynamic Moonraker printer objects
-_RE_FILAMENT_SENSOR = re.compile(r"^filament_switch_sensor\s+\S+")
+# The U1 uses filament_motion_sensor e0_filament … e3_filament; plain Klipper
+# setups use filament_switch_sensor. Both report enabled/filament_detected.
+_RE_FILAMENT_SENSOR = re.compile(r"^filament_(switch|motion)_sensor\s+\S+")
 _RE_TEMP_SENSOR = re.compile(r"^temperature_sensor\s+\S+")
 # Chamber heaters such as the BIQU Panda Breath or DragonBreath, which the U1
 # Extended Firmware exposes to Klipper as a heater_generic.
@@ -69,6 +72,18 @@ _SCREEN_MIRROR_WEBCAM_TOKENS = ("gui", "screen")
 
 # Hostnames that only make sense from the printer itself. Moonraker webcam
 # entries sometimes use these, which would point Home Assistant at itself.
+# Snapmaker's per-nozzle filament info (vendor/type/colour from RFID or the
+# touchscreen). Only these fields are requested; the object is large.
+FILAMENT_CONFIG_OBJECT = "print_task_config"
+FILAMENT_CONFIG_FIELDS = (
+    "filament_vendor",
+    "filament_type",
+    "filament_sub_type",
+    "filament_color_rgba",
+    "filament_exist",
+    "filament_official",
+)
+
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
@@ -107,6 +122,7 @@ class SnapmakerClient:
         self._temp_sensor_keys: list[str] = []
         self._chamber_heater_keys: list[str] = []
         self._chamber_filter_keys: list[str] = []
+        self._has_filament_config = False
 
         # Camera URLs – populated by webcam discovery; fall back to defaults.
         # Initialised to None here; set properly after base_url is available.
@@ -190,6 +206,11 @@ class SnapmakerClient:
         return list(self._temp_sensor_keys)
 
     @property
+    def has_filament_config(self) -> bool:
+        """True when the printer reports per-nozzle filament info."""
+        return self._has_filament_config
+
+    @property
     def chamber_heater_keys(self) -> list[str]:
         """Discovered ``heater_generic`` objects (chamber heaters)."""
         return list(self._chamber_heater_keys)
@@ -266,6 +287,7 @@ class SnapmakerClient:
             self._chamber_filter_keys = [
                 o for o in objects if _RE_CHAMBER_FILTER.match(o)
             ]
+            self._has_filament_config = FILAMENT_CONFIG_OBJECT in objects
             _LOGGER.debug(
                 "Discovered filament sensors: %s; extra temp sensors: %s; "
                 "chamber heaters: %s; chamber filters: %s",
@@ -346,6 +368,13 @@ class SnapmakerClient:
         except Exception as exc:
             _LOGGER.debug("Could not discover webcams: %s", exc)
 
+    def _object_fields(self) -> dict[str, list[str] | None]:
+        """Objects to subscribe/query, with the fields wanted (None = all)."""
+        fields: dict[str, list[str] | None] = dict.fromkeys(self._all_objects())
+        if self._has_filament_config:
+            fields[FILAMENT_CONFIG_OBJECT] = list(FILAMENT_CONFIG_FIELDS)
+        return fields
+
     def _all_objects(self) -> list[str]:
         """Return the full list of objects to subscribe/query."""
         return (
@@ -417,7 +446,7 @@ class SnapmakerClient:
 
     async def _subscribe_objects(self) -> None:
         """Send printer.objects.subscribe via WebSocket."""
-        objects_param = {obj: None for obj in self._all_objects()}
+        objects_param = self._object_fields()
         payload = {
             "jsonrpc": "2.0",
             "method": WS_METHOD_SUBSCRIBE,
@@ -609,6 +638,10 @@ class SnapmakerClient:
                     self._data.chamber_sensors[key] = round(ts["temperature"], 1)
                 changed = True
 
+        if FILAMENT_CONFIG_OBJECT in status:
+            self._update_filament_slots(status[FILAMENT_CONFIG_OBJECT])
+            changed = True
+
         # Chamber heaters (Panda Breath / DragonBreath via heater_generic)
         for key in self._chamber_heater_keys:
             if key in status:
@@ -629,6 +662,40 @@ class SnapmakerClient:
 
         if changed:
             await self._notify_callbacks()
+
+    def _update_filament_slots(self, config: dict[str, Any]) -> None:
+        """Merge a (possibly partial) print_task_config update into the slots."""
+
+        def known(value: Any) -> str | None:
+            # Snapmaker writes the literal "NONE" for unknown values.
+            if not isinstance(value, str) or not value.strip() or value.upper() == "NONE":
+                return None
+            return value.strip()
+
+        for i in range(4):
+            slot = self._data.filament_slots.setdefault(i, FilamentSlot())
+
+            def item(field_name: str):
+                values = config.get(field_name)
+                return values[i] if isinstance(values, list) and i < len(values) else ...
+
+            if (v := item("filament_vendor")) is not ...:
+                slot.vendor = known(v)
+            if (v := item("filament_type")) is not ...:
+                slot.material = known(v)
+            if (v := item("filament_sub_type")) is not ...:
+                slot.sub_type = known(v)
+            if (v := item("filament_color_rgba")) is not ...:
+                rgba = str(v or "").strip().lstrip("#")
+                if re.fullmatch(r"[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?", rgba):
+                    slot.color = f"#{rgba[:6].upper()}"
+                    slot.alpha = int(rgba[6:8], 16) if len(rgba) == 8 else 255
+                else:
+                    slot.color = None
+            if (v := item("filament_exist")) is not ...:
+                slot.loaded = bool(v)
+            if (v := item("filament_official")) is not ...:
+                slot.official = bool(v)
 
     async def _notify_callbacks(self) -> None:
         for cb in list(self._callbacks):
@@ -686,10 +753,11 @@ class SnapmakerClient:
 
     async def _fetch_printer_state(self) -> None:
         """Fetch current printer state via HTTP (used for init and fallback)."""
-        all_obj = self._all_objects()
-        data = await self._get(
-            ENDPOINT_PRINTER_OBJECTS_QUERY, params=dict.fromkeys(all_obj, "")
-        )
+        params = {
+            obj: ",".join(fields) if fields else ""
+            for obj, fields in self._object_fields().items()
+        }
+        data = await self._get(ENDPOINT_PRINTER_OBJECTS_QUERY, params=params)
         status = data.get("result", {}).get("status", {})
         await self._process_status(status)
 
