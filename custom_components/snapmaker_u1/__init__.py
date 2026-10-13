@@ -5,13 +5,20 @@ import logging
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import Platform, UnitOfTemperature
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
+from .const import (
+    CONF_TEMPERATURE_UNIT,
+    DEFAULT_TEMPERATURE_UNIT,
+    DOMAIN,
+    TEMP_UNIT_CELSIUS,
+    TEMP_UNIT_FAHRENHEIT,
+)
 from .coordinator import SnapmakerDataUpdateCoordinator
 from .frontend import async_register_frontend
 
@@ -143,11 +150,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _register_services(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _apply_temperature_unit(hass, entry)
 
     # Reload the entry if options change (e.g. scan interval)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     return True
+
+
+def _apply_temperature_unit(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Show every printer temperature in the unit chosen in the options.
+
+    Home Assistant converts temperatures to its own unit system (°F on US
+    installs). Setting the unit in the entity registry options overrides that
+    per entity, for sensors and number setpoints alike. "Home Assistant
+    default" removes the override again.
+    """
+    choice = entry.options.get(CONF_TEMPERATURE_UNIT, DEFAULT_TEMPERATURE_UNIT)
+    unit = {
+        TEMP_UNIT_CELSIUS: UnitOfTemperature.CELSIUS,
+        TEMP_UNIT_FAHRENHEIT: UnitOfTemperature.FAHRENHEIT,
+    }.get(choice)
+    registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if reg_entry.domain not in ("sensor", "number"):
+            continue
+        device_class = reg_entry.device_class or reg_entry.original_device_class
+        if device_class != "temperature":
+            continue
+        options = dict(reg_entry.options.get(reg_entry.domain, {}))
+        if unit is None:
+            if "unit_of_measurement" not in options:
+                continue
+            options.pop("unit_of_measurement")
+        elif options.get("unit_of_measurement") == unit:
+            continue
+        else:
+            options["unit_of_measurement"] = unit
+        registry.async_update_entity_options(
+            reg_entry.entity_id, reg_entry.domain, options
+        )
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

@@ -8,15 +8,25 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .const import (
     CONF_API_KEY,
     CONF_HOST,
     CONF_PORT,
     CONF_SCAN_INTERVAL,
+    CONF_TEMPERATURE_UNIT,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_TEMPERATURE_UNIT,
     DOMAIN,
+    TEMP_UNIT_CELSIUS,
+    TEMP_UNIT_FAHRENHEIT,
+    TEMP_UNIT_SYSTEM,
 )
 from .pysnapmaker.client import SnapmakerClient
 
@@ -131,7 +141,9 @@ class SnapmakerOptionsFlow(config_entries.OptionsFlow):
     """Handle options for the Snapmaker U1 integration."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
+        # Newer Home Assistant provides a read-only `config_entry` property and
+        # raises if it's assigned, which broke this dialog; keep our own copy.
+        self._entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -140,7 +152,7 @@ class SnapmakerOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        current_interval = self.config_entry.options.get(
+        current_interval = self._entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
         schema = vol.Schema(
@@ -149,6 +161,22 @@ class SnapmakerOptionsFlow(config_entries.OptionsFlow):
                     CONF_SCAN_INTERVAL,
                     default=current_interval,
                 ): vol.All(vol.Coerce(int), vol.Range(min=10, max=300)),
+                vol.Optional(
+                    CONF_TEMPERATURE_UNIT,
+                    default=self._entry.options.get(
+                        CONF_TEMPERATURE_UNIT, DEFAULT_TEMPERATURE_UNIT
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            TEMP_UNIT_CELSIUS,
+                            TEMP_UNIT_FAHRENHEIT,
+                            TEMP_UNIT_SYSTEM,
+                        ],
+                        translation_key=CONF_TEMPERATURE_UNIT,
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

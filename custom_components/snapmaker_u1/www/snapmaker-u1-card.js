@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.8.0";
+const CARD_VERSION = "1.9.0";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -543,7 +543,9 @@ class SnapmakerU1Card extends HTMLElement {
           label: chamberLabel(match[1]),
           icon: "mdi:heat-wave",
           current: num(s),
-          target: s?.attributes.target ?? 0,
+          // The number entity is unit-converted like the sensor; the raw
+          // "target" attribute is always °C.
+          target: num(this._state(`number.heater_${match[1]}_target`)) ?? s?.attributes.target ?? 0,
           unit: s?.attributes.unit_of_measurement,
           moreInfo: this._eid(`number.heater_${match[1]}_target`) || this._eid(role),
         })
@@ -553,8 +555,9 @@ class SnapmakerU1Card extends HTMLElement {
   }
 
   _tempTile({ label, icon, current, target, unit, moreInfo, active = false, filament = null }) {
-    const heating = target != null && target > 0;
     const u = unit || "°C";
+    // A target of 0 °C means "off"; shown in °F that is 32.
+    const heating = target != null && target > (u === "°F" ? 32.5 : 0);
     return `
       <button class="temp ${heating ? "heating" : ""} ${active ? "active" : ""}"
         data-action="more-info" data-entity="${esc(moreInfo || "")}">
@@ -601,24 +604,32 @@ class SnapmakerU1Card extends HTMLElement {
       const numberId = match && this._eid(`number.heater_${match[1]}_target`);
       const number = numberId && this._hass.states[numberId];
       if (!number) continue;
-      const max = Number(number.attributes.max) || 60;
-      // Klipper accepts 0 (off) or min_temp..max_temp; min_temp is on the sensor.
-      const min = Number(this._state(role)?.attributes.min_temp) || 0;
+      // Presets are in °C; the number entity may be shown in °F, in which
+      // case its state, max and set_value all use °F.
+      const fahrenheit = number.attributes.unit_of_measurement === "°F";
+      const toUnit = (c) => (fahrenheit ? Math.round((c * 9) / 5 + 32) : c);
+      const maxC = fahrenheit
+        ? ((Number(number.attributes.max) || 140) - 32) * (5 / 9)
+        : Number(number.attributes.max) || 60;
+      // Klipper accepts 0 (off) or min_temp..max_temp; min_temp (°C) is on the sensor.
+      const minC = Number(this._state(role)?.attributes.min_temp) || 0;
       const target = Number(number.state);
       const disabled = number.state === "unavailable";
+      const unitLabel = fahrenheit ? "°F" : "°C";
       const chips = presets.map(({ name, temp }) => {
         const requested = Number(temp) || 0;
-        const value = requested > 0 ? Math.min(Math.max(requested, min), max) : 0;
+        const off = requested <= 0;
+        const value = toUnit(off ? 0 : Math.min(Math.max(requested, minC), maxC));
         const isLoaded = loaded.some((m) => m === String(name).toUpperCase() || m.startsWith(`${String(name).toUpperCase()}-`));
         // Off presets light up too (neutral), so tapping PLA/TPU gives feedback.
-        const active = Number.isFinite(target) && target === value;
-        const activeClass = active ? (value > 0 ? "active" : "active-off") : "";
+        const active = Number.isFinite(target) && Math.abs(target - value) < 0.6;
+        const activeClass = active ? (off ? "active-off" : "active") : "";
         return `
           <button class="preset ${activeClass} ${isLoaded ? "loaded" : ""}" data-action="preset"
             data-entity="${esc(numberId)}" data-temp="${value}" ${disabled ? "disabled" : ""}
-            title="${esc(`${name}: ${value ? `${value} °C` : "heater off"}${isLoaded ? " (loaded)" : ""}`)}">
+            title="${esc(`${name}: ${off ? "heater off" : `${value} ${unitLabel}`}${isLoaded ? " (loaded)" : ""}`)}">
             <span class="preset-name">${esc(name)}</span>
-            <span class="preset-temp">${value ? `${value}°` : "Off"}</span>
+            <span class="preset-temp">${off ? "Off" : `${value}°`}</span>
           </button>`;
       });
       rows.push(`

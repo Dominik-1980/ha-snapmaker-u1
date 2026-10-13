@@ -333,6 +333,11 @@ entities are created immediately.
 - **Changed the printer's IP?** Use **⋮ → Reconfigure** on the integration.
 - **Polling interval**: **Configure** sets how often state is refreshed while
   the WebSocket is unavailable.
+- **Temperature unit**: **Configure → Temperature unit** picks the unit for
+  every printer temperature (sensors, setpoints, the dashboard card and its
+  presets). It defaults to **°C**, the usual unit for 3D printing, even if
+  Home Assistant itself is set to °F. Choose °F, or *Home Assistant default*
+  to follow your system setting.
 
 ---
 
