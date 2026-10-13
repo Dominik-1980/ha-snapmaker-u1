@@ -11,6 +11,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -79,13 +80,18 @@ class PrintFileSelect(SnapmakerBaseEntity, SelectEntity):
         """Start printing the selected file."""
         client = self.coordinator.client
         if client is None:
-            _LOGGER.warning("Cannot start print – client not available")
-            return
+            raise HomeAssistantError("Snapmaker U1 is not connected")
+        data = self.coordinator.data
+        if data and (data.is_printing or data.is_paused):
+            raise ServiceValidationError(
+                "A print is already running. Cancel or finish it before starting "
+                f"{option}."
+            )
         try:
             await client.start_print(option)
-            _LOGGER.info("Started print: %s", option)
         except Exception as exc:
-            _LOGGER.error("Error starting print %s: %s", option, exc)
+            raise HomeAssistantError(f"Could not start {option}: {exc}") from exc
+        _LOGGER.info("Started print: %s", option)
 
 
 class ActiveToolSelect(SnapmakerBaseEntity, SelectEntity):

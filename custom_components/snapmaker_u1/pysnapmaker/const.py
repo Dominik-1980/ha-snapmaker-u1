@@ -40,6 +40,7 @@ WS_NOTIFY_KLIPPY_READY = "notify_klippy_ready"
 WS_NOTIFY_KLIPPY_SHUTDOWN = "notify_klippy_shutdown"
 WS_NOTIFY_KLIPPY_DISCONNECTED = "notify_klippy_disconnected"
 WS_NOTIFY_HISTORY_CHANGED = "notify_history_changed"
+WS_NOTIFY_FILELIST_CHANGED = "notify_filelist_changed"
 
 # Camera
 CAMERA_STREAM_PATH = "/webcam/stream.mjpg"

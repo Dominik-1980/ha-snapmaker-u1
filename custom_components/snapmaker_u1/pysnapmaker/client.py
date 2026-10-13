@@ -31,6 +31,7 @@ from .const import (
     PRINTER_OBJECTS,
     WS_ENDPOINT,
     WS_METHOD_SUBSCRIBE,
+    WS_NOTIFY_FILELIST_CHANGED,
     WS_NOTIFY_HISTORY_CHANGED,
     WS_NOTIFY_KLIPPY_DISCONNECTED,
     WS_NOTIFY_KLIPPY_READY,
@@ -487,6 +488,11 @@ class SnapmakerClient:
             self._data.klipper_message = "Klipper disconnected"
             await self._notify_callbacks()
 
+        elif method == WS_NOTIFY_FILELIST_CHANGED:
+            # A file was uploaded, deleted or moved on the printer
+            await self.fetch_file_list()
+            await self._notify_callbacks()
+
         elif method == WS_NOTIFY_HISTORY_CHANGED:
             # A print just finished; refresh state and file list
             await self._fetch_printer_state()
@@ -770,11 +776,18 @@ class SnapmakerClient:
         try:
             data = await self._get(ENDPOINT_FILES_LIST)
             files = data.get("result", [])
-            self._data.available_files = sorted(
-                f["filename"]
-                for f in files
-                if isinstance(f, dict) and "filename" in f
-            )
+            # Moonraker reports each file's name as "path" (older releases
+            # used "filename") and already sorts newest first; keep that order.
+            # Don't drop dot-paths: the U1 lists USB-drive files under
+            # ".udisk/", and Moonraker already filters reserved directories.
+            names = []
+            for f in files:
+                if not isinstance(f, dict):
+                    continue
+                name = f.get("path") or f.get("filename")
+                if isinstance(name, str) and name:
+                    names.append(name)
+            self._data.available_files = names
             _LOGGER.debug("Fetched %d G-code files", len(self._data.available_files))
         except Exception as exc:
             _LOGGER.debug("Could not fetch file list: %s", exc)
