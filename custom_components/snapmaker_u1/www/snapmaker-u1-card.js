@@ -602,10 +602,13 @@ class SnapmakerU1Card extends HTMLElement {
       const number = numberId && this._hass.states[numberId];
       if (!number) continue;
       const max = Number(number.attributes.max) || 60;
+      // Klipper accepts 0 (off) or min_temp..max_temp; min_temp is on the sensor.
+      const min = Number(this._state(role)?.attributes.min_temp) || 0;
       const target = Number(number.state);
       const disabled = number.state === "unavailable";
       const chips = presets.map(({ name, temp }) => {
-        const value = Math.min(Number(temp) || 0, max);
+        const requested = Number(temp) || 0;
+        const value = requested > 0 ? Math.min(Math.max(requested, min), max) : 0;
         const isLoaded = loaded.some((m) => m === String(name).toUpperCase() || m.startsWith(`${String(name).toUpperCase()}-`));
         // Off presets light up too (neutral), so tapping PLA/TPU gives feedback.
         const active = Number.isFinite(target) && target === value;
