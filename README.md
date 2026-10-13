@@ -86,6 +86,46 @@ No Snapmaker account or cloud connection is required.
 
 ---
 
+## Dashboard card
+
+The integration ships its own dashboard card, styled like the
+[Printer Tools](https://github.com/62fixolab/Printer-Tools-App) app. It loads
+automatically, so there's nothing to install or add as a resource.
+
+**Edit dashboard → Add card → search "Snapmaker U1"**, or in YAML:
+
+```yaml
+type: custom:snapmaker-u1-card
+```
+
+What it shows:
+- **Live camera** at the top. Tap it to open the full camera view. If live
+  video isn't available, it falls back to a snapshot every 5 seconds.
+- **Status pill**: Printing, Paused, Complete, Ready, Error or Offline.
+- **Progress ring** with the file name, layer (e.g. 142 / 230), time
+  remaining, ETA and elapsed time.
+- **Temperature tiles** for each nozzle (T0–T3, with the active tool
+  highlighted), the bed and the chamber. Tap a tile to set its target.
+- **Speed, flow and fan** at a glance. Tap to adjust.
+- **Alerts** for printer errors and filament runout.
+- **Controls**: Pause/Resume, Cancel, Light, Home and E-Stop. Cancel and
+  E-Stop need a second tap to confirm.
+
+Options (all optional, also available in the visual editor):
+
+| Option | Default | Description |
+|---|---|---|
+| `entry_id` | first printer | Which printer to show, if you have more than one |
+| `title` | printer name | Card title |
+| `accent_color` | `theme` | `theme`, `orange`, `blue`, `green`, `purple`, `red`, `teal`, `pink`, or any CSS color like `"#ff6600"` |
+| `show_camera` | `true` | Show the camera feed |
+| `camera_mode` | `live` | `live` video or `snapshot` (refreshed every 5 seconds) |
+| `show_controls` | `true` | Show the control buttons |
+
+Light and dark mode follow your Home Assistant theme.
+
+---
+
 ## Installation
 
 ### HACS (recommended)
