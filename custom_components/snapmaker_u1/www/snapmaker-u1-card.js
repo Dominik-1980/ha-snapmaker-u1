@@ -104,6 +104,10 @@ const chamberLabel = (name) => {
   return lower.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
+// "DragonBreath" -> "Dragon<wbr>Breath" so long camel-case names wrap like
+// "Panda Breath" instead of running out of the tile.
+const breakableLabel = (label) => esc(label).replace(/([a-z])([A-Z])/g, "$1<wbr>$2");
+
 const prettyFilename = (name) =>
   String(name || "")
     .split("/")
@@ -208,6 +212,9 @@ class SnapmakerU1Card extends HTMLElement {
   _roles(prefix) {
     return Object.keys(this._printer?.entities || {})
       .filter((role) => role.startsWith(prefix))
+      // Skip leftovers the printer no longer provides (e.g. a Panda Breath
+      // replaced by a DragonBreath): HA keeps them as "restored" entities.
+      .filter((role) => !this._state(role)?.attributes?.restored)
       .sort();
   }
 
@@ -529,7 +536,7 @@ class SnapmakerU1Card extends HTMLElement {
     return `
       <button class="temp ${heating ? "heating" : ""} ${active ? "active" : ""}"
         data-action="more-info" data-entity="${esc(moreInfo || "")}">
-        <div class="temp-head"><ha-icon icon="${icon}"></ha-icon><span>${esc(label)}</span>${this._swatch(filament)}</div>
+        <div class="temp-head"><ha-icon icon="${icon}"></ha-icon><span class="temp-label" title="${esc(label)}">${breakableLabel(label)}</span>${this._swatch(filament)}</div>
         <div class="temp-value">${current != null ? Math.round(current) : "–"}<span>${esc(u)}</span></div>
         <div class="temp-target">${heating ? `→ ${Math.round(target)}${esc(u)}` : target == null ? "&nbsp;" : "Off"}</div>
         ${this._filamentLine(filament)}
@@ -566,8 +573,10 @@ class SnapmakerU1Card extends HTMLElement {
         return `
           <button class="stat" data-action="more-info" data-entity="${esc(this._eid(setpoint) || this._eid(role))}">
             <ha-icon icon="${icon}"></ha-icon>
-            <span class="stat-label">${label}</span>
-            <span class="stat-value">${value != null ? `${Math.round(value)}%` : "–"}</span>
+            <span class="stat-text">
+              <span class="stat-value">${value != null ? `${Math.round(value)}%` : "–"}</span>
+              <span class="stat-label">${label}</span>
+            </span>
           </button>`;
       });
     return stats.length ? `<div class="stats">${stats.join("")}</div>` : "";
@@ -825,6 +834,7 @@ const STYLES = `
   }
   .temp.active { border-color: var(--sm-accent); box-shadow: inset 0 0 0 1px var(--sm-accent); }
   .temp-head { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--secondary-text-color); --mdc-icon-size: 16px; }
+  .temp-label { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
   .temp.heating .temp-head ha-icon { color: var(--state-climate-heat-color, #ff8100); }
   .temp-value { font-size: 20px; font-weight: 700; }
   .temp-value span { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); margin-left: 1px; }
@@ -842,12 +852,15 @@ const STYLES = `
   .temp.heating .temp-target { color: var(--state-climate-heat-color, #ff8100); }
   .stats { display: flex; gap: 8px; flex-wrap: wrap; }
   .stat {
-    flex: 1; min-width: 90px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 12px;
+    flex: 1; min-width: 72px; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 12px;
+    overflow: hidden;
     border: 1px solid var(--divider-color); background: transparent; cursor: pointer; --mdc-icon-size: 18px;
   }
   .stat ha-icon { color: var(--sm-accent); }
-  .stat-label { font-size: 12px; color: var(--secondary-text-color); }
-  .stat-value { margin-left: auto; font-weight: 600; font-size: 14px; }
+  .stat-text { display: flex; flex-direction: column; min-width: 0; text-align: left; line-height: 1.2; }
+  .stat-value { font-weight: 600; font-size: 14px; }
+  .stat-label { font-size: 11px; color: var(--secondary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat ha-icon { flex: none; }
   .controls { display: flex; gap: 8px; flex-wrap: wrap; }
   .control {
     flex: 1; min-width: 58px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 6px;
