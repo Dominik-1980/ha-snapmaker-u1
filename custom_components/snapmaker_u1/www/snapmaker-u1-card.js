@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.7.0";
+const CARD_VERSION = "1.7.2";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -33,6 +33,7 @@ const STATUS = {
 
 const CONFIRM_MS = 4000;
 const SNAPSHOT_REFRESH_MS = 5000;
+const LIVE_FIRST_FRAME_MS = 8000;
 
 const esc = (value) =>
   String(value ?? "").replace(
@@ -189,6 +190,7 @@ class SnapmakerU1Card extends HTMLElement {
         <div class="camera" data-action="camera" hidden>
           <img alt="Printer camera" />
           <div class="camera-badge"><span class="dot"></span><span class="camera-label">LIVE</span></div>
+          <div class="camera-error"><ha-icon icon="mdi:camera-off"></ha-icon><span>Camera unavailable</span></div>
         </div>
         <div class="content"></div>
       </ha-card>`;
@@ -201,8 +203,13 @@ class SnapmakerU1Card extends HTMLElement {
         this._cameraFallback = true;
         this._cameraSrc = "";
         this._updateCamera();
+        return;
       }
+      // Snapshots failing too: say so instead of showing a black box. The
+      // snapshot timer keeps retrying, and a successful load clears this.
+      if (this._cameraSrc) this._cameraEl.classList.add("is-error");
     });
+    this._imgEl.addEventListener("load", () => this._cameraEl.classList.remove("is-error"));
     this._cameraSrc = "";
   }
 
@@ -261,11 +268,25 @@ class SnapmakerU1Card extends HTMLElement {
         this._snapshotTimer = setInterval(refresh, SNAPSHOT_REFRESH_MS);
       }
     } else if (token) {
-      this._setCamera(`/api/camera_proxy_stream/${camera.entity_id}?token=${token}`);
+      const src = `/api/camera_proxy_stream/${camera.entity_id}?token=${token}`;
+      if (src !== this._cameraSrc) {
+        this._setCamera(src);
+        // A stream that stays open without sending a frame never fires
+        // "error"; treat no picture after a few seconds as a failure too.
+        clearTimeout(this._liveWatchdog);
+        this._liveWatchdog = setTimeout(() => {
+          if (this._cameraSrc === src && !this._imgEl.naturalWidth && !this._cameraFallback) {
+            this._cameraFallback = true;
+            this._cameraSrc = "";
+            this._updateCamera();
+          }
+        }, LIVE_FIRST_FRAME_MS);
+      }
     }
   }
 
   _setCamera(src, keepTimer = false) {
+    if (!src) clearTimeout(this._liveWatchdog);
     if (!keepTimer && this._snapshotTimer) {
       clearInterval(this._snapshotTimer);
       this._snapshotTimer = null;
@@ -401,8 +422,10 @@ class SnapmakerU1Card extends HTMLElement {
     const tiles = [];
     const activeTool = this._state("select.active_tool")?.state;
     // "extruder" is T0, "extruder1" is T1, and so on.
+    // Nozzle sensor roles are "sensor.extruder_extruder_temperature" (the
+    // unique ID repeats the extruder key); accept the short form as well.
     const extruders = this._roles("sensor.extruder")
-      .map((role) => role.match(/^sensor\.(extruder(\d*))_temperature$/))
+      .map((role) => role.match(/^sensor\.(?:extruder\d*_)?(extruder(\d*))_temperature$/))
       .filter(Boolean)
       .map(([role, key, n]) => ({ role, key, index: n ? Number(n) : 0 }))
       .sort((a, b) => a.index - b.index);
@@ -413,7 +436,7 @@ class SnapmakerU1Card extends HTMLElement {
           label: tool,
           icon: "mdi:printer-3d-nozzle",
           current: num(this._state(role)),
-          target: num(this._state(`sensor.${key}_target`)),
+          target: num(this._state(role.replace(/_temperature$/, "_target"))),
           unit: this._state(role)?.attributes.unit_of_measurement,
           moreInfo: this._eid(`number.${key}_target_setpoint`) || this._eid(role),
           active: extruders.length > 1 && activeTool === tool,
@@ -710,6 +733,12 @@ const STYLES = `
   .camera { position: relative; background: #000; cursor: pointer; aspect-ratio: 16 / 9; }
   .camera[hidden] { display: none; }
   .camera img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .camera-error {
+    display: none; position: absolute; inset: 0; align-items: center; justify-content: center; gap: 8px;
+    color: rgba(255,255,255,.75); font-size: 14px; --mdc-icon-size: 22px;
+  }
+  .camera.is-error img, .camera.is-error .camera-badge { visibility: hidden; }
+  .camera.is-error .camera-error { display: flex; }
   .camera-badge {
     position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 6px;
     padding: 3px 8px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff;
