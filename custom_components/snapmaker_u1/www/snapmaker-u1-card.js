@@ -607,9 +607,11 @@ class SnapmakerU1Card extends HTMLElement {
       const chips = presets.map(({ name, temp }) => {
         const value = Math.min(Number(temp) || 0, max);
         const isLoaded = loaded.some((m) => m === String(name).toUpperCase() || m.startsWith(`${String(name).toUpperCase()}-`));
-        const active = value > 0 && target === value;
+        // Off presets light up too (neutral), so tapping PLA/TPU gives feedback.
+        const active = Number.isFinite(target) && target === value;
+        const activeClass = active ? (value > 0 ? "active" : "active-off") : "";
         return `
-          <button class="preset ${active ? "active" : ""} ${isLoaded ? "loaded" : ""}" data-action="preset"
+          <button class="preset ${activeClass} ${isLoaded ? "loaded" : ""}" data-action="preset"
             data-entity="${esc(numberId)}" data-temp="${value}" ${disabled ? "disabled" : ""}
             title="${esc(`${name}: ${value ? `${value} °C` : "heater off"}${isLoaded ? " (loaded)" : ""}`)}">
             <span class="preset-name">${esc(name)}</span>
@@ -935,6 +937,8 @@ const STYLES = `
   .preset-temp { font-size: 11px; color: var(--secondary-text-color); }
   .preset.active { border-color: var(--state-climate-heat-color, #ff8100); background: color-mix(in srgb, var(--state-climate-heat-color, #ff8100) 14%, transparent); }
   .preset.active .preset-temp { color: var(--state-climate-heat-color, #ff8100); font-weight: 600; }
+  .preset.active-off { border-color: var(--secondary-text-color); background: color-mix(in srgb, var(--primary-text-color) 7%, transparent); }
+  .preset.active-off .preset-temp { color: var(--primary-text-color); font-weight: 600; }
   .preset.loaded::after {
     content: ""; position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--sm-accent);
   }

@@ -285,7 +285,7 @@ filament type and the chamber heater goes to its recommended temperature:
 | PA (nylon) | 55 °C |
 | PC | 60 °C |
 
-- The preset that's currently set is highlighted, and a small dot marks
+- The preset that's currently set is highlighted (Off presets in grey), and a small dot marks
   the filament type that's loaded in a nozzle.
 - Targets are capped at the heater's maximum from the printer's config.
 - To use your own values, set `chamber_presets` on the card:
