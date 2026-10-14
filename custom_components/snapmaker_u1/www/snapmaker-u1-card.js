@@ -7,7 +7,7 @@
  * temperatures and print controls for one printer.
  */
 
-const CARD_VERSION = "1.9.0";
+const CARD_VERSION = "1.9.1";
 const DOMAIN = "snapmaker_u1";
 
 const ACCENTS = {
@@ -163,24 +163,49 @@ class SnapmakerU1Card extends HTMLElement {
       camera_mode: "live",
       show_controls: true,
       accent_color: "theme",
-      ...config,
+      ...(config && typeof config === "object" ? config : {}),
     };
     this._signature = "";
     this._cameraFallback = false;
     this._buildSkeleton();
-    if (this._hass) this._update();
+    if (this._hass) this._safeUpdate();
   }
 
   set hass(hass) {
     this._hass = hass;
     if (!this._printers && !this._loading) this._loadPrinters();
-    this._update();
+    this._safeUpdate();
+  }
+
+  // Home Assistant replaces a card that throws while updating with a blank
+  // "Configuration error" box for good. Catch everything instead, keep the
+  // card alive, and show what went wrong so it can be reported.
+  _safeUpdate() {
+    try {
+      this._update();
+      this._lastError = null;
+    } catch (err) {
+      this._signature = "";
+      const message = (err && (err.message || String(err))) || "Unknown error";
+      if (message !== this._lastError) {
+        this._lastError = message;
+        console.error("snapmaker-u1-card:", err);
+      }
+      if (this._contentEl) {
+        const where = ((err && err.stack) || "").split("\n").slice(1, 2).join("").trim();
+        this._contentEl.innerHTML = `
+          <div class="alert card-error">
+            <ha-icon icon="mdi:alert-circle"></ha-icon>
+            <span>Snapmaker card error: ${esc(message)}${where ? `<br><small>${esc(where)}</small>` : ""}</span>
+          </div>`;
+      }
+    }
   }
 
   connectedCallback() {
     this._connected = true;
     this._signature = "";
-    if (this._hass) this._update();
+    if (this._hass) this._safeUpdate();
   }
 
   disconnectedCallback() {
@@ -212,7 +237,7 @@ class SnapmakerU1Card extends HTMLElement {
     }
     this._loading = false;
     this._signature = "";
-    this._update();
+    this._safeUpdate();
   }
 
   get _printer() {
@@ -424,11 +449,13 @@ class SnapmakerU1Card extends HTMLElement {
       const date = new Date(etaState.state);
       if (!Number.isNaN(date.getTime())) {
         const sameDay = date.toDateString() === new Date().toDateString();
-        eta = date.toLocaleString(this._hass.locale?.language, {
-          ...(sameDay ? {} : { weekday: "short" }),
-          hour: "2-digit",
-          minute: "2-digit",
-        });
+        const options = { ...(sameDay ? {} : { weekday: "short" }), hour: "2-digit", minute: "2-digit" };
+        try {
+          eta = date.toLocaleString(this._hass.locale?.language || undefined, options);
+        } catch (err) {
+          // Unknown language tag: fall back to the browser's locale.
+          eta = date.toLocaleString(undefined, options);
+        }
       }
     }
     const filename = prettyFilename(this._state("sensor.filename")?.state);
@@ -588,9 +615,11 @@ class SnapmakerU1Card extends HTMLElement {
 
   // One row of filament preset buttons per chamber heater.
   _renderChamberPresets() {
-    const presets = Array.isArray(this._config.chamber_presets)
-      ? this._config.chamber_presets
-      : DEFAULT_CHAMBER_PRESETS;
+    const presets = (
+      Array.isArray(this._config.chamber_presets) ? this._config.chamber_presets : DEFAULT_CHAMBER_PRESETS
+    )
+      .filter((preset) => preset && typeof preset === "object" && preset.name != null)
+      .map((preset) => ({ name: String(preset.name), temp: preset.temp }));
     if (!presets.length) return "";
     // Materials currently loaded, so the matching preset can be marked.
     const loaded = this._roles("sensor.extruder")
@@ -732,10 +761,10 @@ class SnapmakerU1Card extends HTMLElement {
         action,
         timer: setTimeout(() => {
           this._armed = null;
-          this._update();
+          this._safeUpdate();
         }, CONFIRM_MS),
       };
-      this._update();
+      this._safeUpdate();
       return;
     }
     clearTimeout(this._armed?.timer);
@@ -774,7 +803,7 @@ class SnapmakerU1Card extends HTMLElement {
         this._hass.callService("switch", "toggle", { entity_id: this._eid("switch.work_light") });
         break;
     }
-    this._update();
+    this._safeUpdate();
   }
 
   _moreInfo(entityId) {
@@ -915,7 +944,7 @@ const STYLES = `
   .fact-label { font-size: 11px; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: .04em; }
   .fact-value { font-size: 14px; font-weight: 600; white-space: nowrap; }
   .idle { display: flex; align-items: center; gap: 10px; color: var(--secondary-text-color); font-size: 15px; --mdc-icon-size: 22px; }
-  .temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+  .temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
   .temp {
     text-align: left; border: 1px solid var(--divider-color); border-radius: 14px; padding: 10px;
     background: var(--secondary-background-color, transparent); cursor: pointer; display: flex; flex-direction: column; gap: 2px;
